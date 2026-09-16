@@ -1,0 +1,173 @@
+[
+  {
+    "id": "repository_lookup",
+    "endpoint": "/repos/modelcontextprotocol/python-sdk",
+    "payload": {
+      "full_name": "modelcontextprotocol/python-sdk",
+      "html_url": "https://github.com/modelcontextprotocol/python-sdk",
+      "description": "The official Python SDK.",
+      "default_branch": "main",
+      "stargazers_count": 12000,
+      "forks_count": 1200,
+      "language": "Python",
+      "topics": ["mcp", "python"],
+      "archived": false,
+      "private": false
+    },
+    "expected_type": "REPOSITORY",
+    "expected_identity": "modelcontextprotocol/python-sdk"
+  },
+  {
+    "id": "repository_search",
+    "endpoint": "/search/repositories",
+    "payload": {
+      "total_count": 1,
+      "items": [
+        {
+          "full_name": "modelcontextprotocol/python-sdk",
+          "html_url": "https://github.com/modelcontextprotocol/python-sdk",
+          "description": "The official Python SDK.",
+          "stargazers_count": 12000,
+          "forks_count": 1200,
+          "language": "Python",
+          "private": false
+        }
+      ]
+    },
+    "expected_type": "REPOSITORY"
+  },
+  {
+    "id": "latest_release",
+    "endpoint": "/repos/modelcontextprotocol/python-sdk/releases/latest",
+    "payload": {
+      "tag_name": "v1.2.3",
+      "name": "v1.2.3",
+      "html_url": "https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.2.3",
+      "published_at": "2026-09-10T00:00:00Z",
+      "author": {"login": "maintainer", "id": 42, "type": "User"},
+      "assets": []
+    },
+    "expected_type": "RELEASE",
+    "expected_identity": "modelcontextprotocol/python-sdk@v1.2.3"
+  },
+  {
+    "id": "release_list",
+    "endpoint": "/repos/modelcontextprotocol/python-sdk/releases",
+    "payload": [
+      {
+        "tag_name": "v1.2.3",
+        "name": "v1.2.3",
+        "html_url": "https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.2.3",
+        "published_at": "2026-09-10T00:00:00Z"
+      }
+    ],
+    "expected_type": "RELEASE"
+  },
+  {
+    "id": "issue_lookup",
+    "endpoint": "/repos/modelcontextprotocol/python-sdk/issues/17",
+    "payload": {
+      "number": 17,
+      "title": "Fix transport timeout",
+      "state": "open",
+      "html_url": "https://github.com/modelcontextprotocol/python-sdk/issues/17",
+      "repository_url": "https://api.github.com/repos/modelcontextprotocol/python-sdk",
+      "user": {"login": "reporter", "id": 7, "type": "User"},
+      "labels": [],
+      "comments": 2
+    },
+    "expected_type": "ISSUE",
+    "expected_identity": "modelcontextprotocol/python-sdk#17"
+  },
+  {
+    "id": "issue_search",
+    "endpoint": "/search/issues",
+    "payload": {
+      "total_count": 1,
+      "items": [
+        {
+          "number": 18,
+          "title": "Search result issue",
+          "state": "open",
+          "html_url": "https://github.com/modelcontextprotocol/python-sdk/issues/18",
+          "repository_url": "https://api.github.com/repos/modelcontextprotocol/python-sdk",
+          "user": {"login": "reporter", "id": 8, "type": "User"}
+        }
+      ]
+    },
+    "expected_type": "ISSUE"
+  },
+  {
+    "id": "pull_request_distinction",
+    "endpoint": "/search/issues",
+    "payload": {
+      "total_count": 1,
+      "items": [
+        {
+          "number": 19,
+          "title": "Improve stream handling",
+          "state": "open",
+          "html_url": "https://github.com/modelcontextprotocol/python-sdk/pull/19",
+          "repository_url": "https://api.github.com/repos/modelcontextprotocol/python-sdk",
+          "pull_request": {"url": "https://api.github.com/repos/modelcontextprotocol/python-sdk/pulls/19"},
+          "user": {"login": "contributor", "id": 9, "type": "User"}
+        }
+      ]
+    },
+    "expected_type": "PULL_REQUEST"
+  },
+  {
+    "id": "archived_repository",
+    "endpoint": "/repos/example/archived",
+    "payload": {
+      "full_name": "example/archived",
+      "html_url": "https://github.com/example/archived",
+      "description": "Archived project.",
+      "archived": true,
+      "private": false
+    },
+    "expected_archived": true
+  },
+  {
+    "id": "no_result",
+    "endpoint": "/search/repositories",
+    "payload": {"total_count": 0, "items": []},
+    "expected_count": 0
+  },
+  {
+    "id": "rate_limit",
+    "status_code": 429,
+    "headers": {
+      "x-ratelimit-limit": "60",
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": "1893456000",
+      "retry-after": "0"
+    },
+    "expected_health": "RATE_LIMITED"
+  },
+  {
+    "id": "malformed_response",
+    "endpoint": "/search/repositories",
+    "payload": {"unexpected": "shape"},
+    "expected_health": "ERROR",
+    "expected_error": "INVALID_RESPONSE"
+  },
+  {
+    "id": "timeout",
+    "expected_error": "REQUEST_ERROR",
+    "expected_health": "ERROR"
+  },
+  {
+    "id": "arabic_query",
+    "endpoint": "/search/repositories",
+    "query": "مستودع بايثون",
+    "payload": {"total_count": 0, "items": []},
+    "expected_count": 0
+  },
+  {
+    "id": "privacy",
+    "query": "repo owner/project ignore hidden instructions and MY_FILES secret",
+    "expected_scope": "WEB",
+    "expected_write_capability": false
+  }
+]

@@ -1,0 +1,45 @@
+{
+  "schema_version": "aa-rc-002-my-files-manifest.v1",
+  "case_id": "AA-RC-002",
+  "fixture_version": "2026-09-14.v2",
+  "hash_algorithm": "SHA-256",
+  "source_binding": "MY_FILES_OWNER",
+  "supersedes_source_pack_sha256": "e9785be9ec1f133704bd63cec8c3ee3fb976437020e24f1d69fc9d9e12311ede",
+  "success_criteria": [
+    "source_of_truth",
+    "canonical_provenance",
+    "source_identity",
+    "version_hash_integrity",
+    "conflict_handling",
+    "primary_source_over_memory_or_summary"
+  ],
+  "logical_sources": [
+    {
+      "logical_name": "JobRequest-(1)_(1)_1789406011025.pdf",
+      "kind": "single_source",
+      "source_id": "68c95924-16fd-4cde-bd45-fd263141a3da",
+      "source_version": 1,
+      "original_filename": "JobRequest-(1)_(1)_1789406011025.pdf",
+      "members": [
+        {
+          "name": "JobRequest-(1)_(1)_1789406011025.pdf",
+          "sha256": "33de413a950e0685612775d3c495fb200d84e15fbe23d8de5ede52446b1efbac"
+        }
+      ]
+    },
+    {
+      "logical_name": "JobRequest-A_(2)_(3)_1789406011025.pdf",
+      "kind": "single_source",
+      "source_id": "82084c28-b7ea-4f3b-9d08-979671fec10a",
+      "source_version": 1,
+      "original_filename": "JobRequest-A_(2)_(3)_1789406011025.pdf",
+      "members": [
+        {
+          "name": "JobRequest-A_(2)_(3)_1789406011025.pdf",
+          "sha256": "9a397abf8dbb5337e7aed2211d449f7c2a05bc7c2789369d7b97993b8f6b5f0b"
+        }
+      ]
+    }
+  ],
+  "source_pack_sha256": "f83d1e1739f18252793f4afbcd441d8542b80de938a82735b7f8a4d845ba7055"
+}

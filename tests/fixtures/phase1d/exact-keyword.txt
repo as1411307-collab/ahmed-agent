@@ -1,0 +1,2 @@
+# Exact project identifier
+The exact identifier for the semantic indexing project is VECTOR-ALPHA-42.

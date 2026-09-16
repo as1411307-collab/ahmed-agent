@@ -1,0 +1,202 @@
+[
+  {
+    "id": "crossref-doi",
+    "query": "10.1038/s41586-020-2649-2",
+    "intent": "doi",
+    "expected": {
+      "provider_route": ["crossref"],
+      "doi": "10.1038/s41586-020-2649-2",
+      "required_fields": ["title", "normalized_doi", "source_provenance"],
+      "merge_behavior": "single",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "datacite-doi",
+    "query": "10.5438/0012",
+    "intent": "doi",
+    "expected": {
+      "provider_route": ["datacite"],
+      "doi": "10.5438/0012",
+      "required_fields": ["title", "normalized_doi", "source_provenance"],
+      "merge_behavior": "single",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "doi-url-prefix",
+    "query": "https://doi.org/10.1038/s41586-020-2649-2",
+    "intent": "doi",
+    "expected": {
+      "provider_route": ["crossref"],
+      "doi": "10.1038/s41586-020-2649-2",
+      "required_fields": ["title", "normalized_doi", "source_provenance"],
+      "merge_behavior": "single",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "exact-title",
+    "query": "Attention Is All You Need",
+    "intent": "exact_title",
+    "expected": {
+      "provider_route": ["crossref"],
+      "title_pattern": "attention is all you need",
+      "required_fields": ["title", "authors", "source_provenance"],
+      "merge_behavior": "single",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "ambiguous-title",
+    "query": "Deep learning",
+    "intent": "exact_title",
+    "expected": {
+      "provider_route": ["crossref", "openalex"],
+      "required_fields": ["title", "source_provenance"],
+      "merge_behavior": "deduplicated",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "author-search",
+    "query": "Geoffrey Hinton",
+    "intent": "author",
+    "expected": {
+      "provider_route": ["openalex"],
+      "required_fields": ["authors"],
+      "merge_behavior": "not_applicable",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "topic-search",
+    "query": "machine learning",
+    "intent": "topic",
+    "expected": {
+      "provider_route": ["openalex"],
+      "required_fields": ["title", "source_provenance"],
+      "merge_behavior": "deduplicated",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "latest-research",
+    "query": "latest research machine learning",
+    "intent": "latest_research",
+    "expected": {
+      "provider_route": ["openalex"],
+      "required_fields": ["title", "publication_date", "source_provenance"],
+      "merge_behavior": "deduplicated",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "citation-lookup",
+    "query": "10.1038/s41586-020-2649-2",
+    "intent": "citations",
+    "expected": {
+      "provider_route": ["crossref", "openalex"],
+      "doi": "10.1038/s41586-020-2649-2",
+      "required_fields": ["graph", "source_provenance"],
+      "merge_behavior": "graph_on_demand",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "reference-lookup",
+    "query": "10.1038/s41586-020-2649-2",
+    "intent": "citations",
+    "expected": {
+      "provider_route": ["crossref", "openalex"],
+      "doi": "10.1038/s41586-020-2649-2",
+      "required_fields": ["graph", "source_provenance"],
+      "merge_behavior": "graph_on_demand",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "duplicate-same-paper",
+    "operation": "merge",
+    "expected": {
+      "provider_route": ["crossref", "openalex"],
+      "doi": "10.1000/example",
+      "required_fields": ["normalized_doi", "source_provenance"],
+      "merge_behavior": "one_result",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "conflicting-metadata",
+    "operation": "merge",
+    "expected": {
+      "provider_route": ["crossref", "openalex"],
+      "doi": "10.1000/example",
+      "required_fields": ["metadata_conflicts", "source_provenance"],
+      "merge_behavior": "preserve_conflict",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "missing-doi",
+    "query": "paper without a registered identifier",
+    "intent": "topic",
+    "expected": {
+      "provider_route": ["openalex"],
+      "doi": null,
+      "required_fields": ["title", "normalized_doi", "source_provenance"],
+      "merge_behavior": "single",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "arabic-academic-query",
+    "query": "ابحث عن أبحاث حديثة عن معالجة اللغة العربية",
+    "intent": "topic",
+    "expected": {
+      "provider_route": ["openalex"],
+      "title_pattern": "arabic",
+      "required_fields": ["title", "source_provenance"],
+      "merge_behavior": "deduplicated",
+      "enrichment_expected": true,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "invalid-doi",
+    "query": "not a DOI",
+    "intent": "doi",
+    "expected": {
+      "provider_route": [],
+      "required_fields": ["results"],
+      "merge_behavior": "no_result",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  },
+  {
+    "id": "no-result",
+    "query": "zzzzzzzz academic record that should not exist",
+    "intent": "topic",
+    "expected": {
+      "provider_route": ["openalex"],
+      "required_fields": ["results"],
+      "merge_behavior": "no_result",
+      "enrichment_expected": false,
+      "tavily_fallback_allowed": false
+    }
+  }
+]

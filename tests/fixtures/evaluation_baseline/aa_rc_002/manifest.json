@@ -1,0 +1,37 @@
+{
+  "schema_version": "aa-rc-002-source-pack.v1",
+  "case_id": "AA-RC-002",
+  "fixture_version": "2026-09-14.v1",
+  "hash_algorithm": "SHA-256",
+  "logical_sources": [
+    {
+      "logical_name": "ahmed_agent_master_v3_ar(1).md",
+      "kind": "single_source",
+      "members": [
+        {
+          "name": "ahmed_agent_master_v3_ar(1).md",
+          "sha256": "dbc169440ae89531d59430df59e712c54f0beab5f6ffe9d10a9b5090bd2880ca"
+        }
+      ]
+    },
+    {
+      "logical_name": "Ahmed Agent - Incident Evidence",
+      "kind": "logical_collection",
+      "members": [
+        {
+          "name": "incident_evidence/incident_001.md",
+          "sha256": "eda4da572ce03575b99088237da11e488642afbc73b8857be01f4426e0f35b9e"
+        },
+        {
+          "name": "incident_evidence/incident_002.md",
+          "sha256": "ec27df7d90ad83e9434a88e05f8bbc384ec5431a4fede0554eff5c9a7861079d"
+        },
+        {
+          "name": "incident_evidence/incident_003.md",
+          "sha256": "51e93f4f77e755be918472e9f1f18ee401c68cf1c45e7f4047fc7088b5ddfafe"
+        }
+      ]
+    }
+  ],
+  "source_pack_sha256": "e9785be9ec1f133704bd63cec8c3ee3fb976437020e24f1d69fc9d9e12311ede"
+}

@@ -1,0 +1,37 @@
+[
+  {
+    "id": "official-technical",
+    "query": "current official Python MCP SDK documentation",
+    "expected_domains": ["python.org", "modelcontextprotocol.io", "github.com"]
+  },
+  {
+    "id": "recent-current",
+    "query": "latest official Python release news",
+    "expected_domains": ["python.org"]
+  },
+  {
+    "id": "general-factual",
+    "query": "how does HTTP caching work",
+    "expected_domains": []
+  },
+  {
+    "id": "arabic",
+    "query": "ما هو بروتوكول Model Context Protocol",
+    "expected_domains": ["modelcontextprotocol.io"]
+  },
+  {
+    "id": "regional-non-english",
+    "query": "آخر أخبار التقنية في الإمارات",
+    "expected_domains": []
+  },
+  {
+    "id": "niche-independent-index",
+    "query": "niche independent sources for MCP server interoperability",
+    "expected_domains": []
+  },
+  {
+    "id": "duplicate-syndication",
+    "query": "official announcement about Python security updates",
+    "expected_domains": ["python.org"]
+  }
+]
