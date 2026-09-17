@@ -1,12 +1,49 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
+import time
 from dataclasses import dataclass
 
 from starlette.requests import Request
 
 from config import AHMED_OWNER_TOKEN
 from persistence import record_auth_event
+
+# Failed-attempt throttling (Issue: auth backoff). In-memory is sufficient for the
+# single-process, single-owner deployment; it resets on restart by design.
+_AUTH_BACKOFF_BASE_SECONDS = 1.0
+_AUTH_BACKOFF_MAX_SECONDS = 60.0
+_AUTH_FAILURE_RESET_SECONDS = 15 * 60
+_failed_attempts: dict[str, tuple[int, float]] = {}
+
+
+def _client_key(request: Request) -> str:
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None) or "unknown"
+
+
+def _throttle_delay(key: str) -> float:
+    """Seconds the client must still wait before another attempt is processed."""
+    entry = _failed_attempts.get(key)
+    if not entry:
+        return 0.0
+    failures, last_failure = entry
+    if time.monotonic() - last_failure > _AUTH_FAILURE_RESET_SECONDS:
+        _failed_attempts.pop(key, None)
+        return 0.0
+    delay = min(_AUTH_BACKOFF_BASE_SECONDS * (2 ** (failures - 1)), _AUTH_BACKOFF_MAX_SECONDS)
+    remaining = delay - (time.monotonic() - last_failure)
+    return max(0.0, remaining)
+
+
+def _record_failure(key: str) -> None:
+    failures, _ = _failed_attempts.get(key, (0, 0.0))
+    _failed_attempts[key] = (failures + 1, time.monotonic())
+
+
+def _clear_failures(key: str) -> None:
+    _failed_attempts.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -39,8 +76,21 @@ async def authorize_owner(
     endpoint: str,
     action_id: str | None = None,
 ) -> tuple[AuthenticatedUser | None, int, str | None]:
+    key = _client_key(request)
+    delay = _throttle_delay(key)
+    if delay > 0:
+        await _record_auth_attempt(
+            endpoint=endpoint,
+            action_id=action_id,
+            authenticated=False,
+            result="throttled",
+        )
+        # Uniform response: do not reveal throttle state details to the caller.
+        await asyncio.sleep(min(delay, _AUTH_BACKOFF_BASE_SECONDS))
+        return None, 429, "AUTH_THROTTLED"
     user = await get_authenticated_user(request)
     if user is None:
+        _record_failure(key)
         await _record_auth_attempt(
             endpoint=endpoint,
             action_id=action_id,
@@ -48,6 +98,7 @@ async def authorize_owner(
             result="unauthenticated",
         )
         return None, 401, "AUTHENTICATION_REQUIRED"
+    _clear_failures(key)
     await _record_auth_attempt(
         endpoint=endpoint,
         action_id=action_id,

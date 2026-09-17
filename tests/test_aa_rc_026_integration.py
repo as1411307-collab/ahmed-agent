@@ -5,6 +5,16 @@ from unittest.mock import patch
 
 import evaluation_aa_rc_026 as aa_rc_026
 
+from pathlib import Path as _Path
+import unittest as _unittest
+
+_ROOT = _Path(__file__).resolve().parent.parent
+_MISSING_ARTIFACTS = [
+    name
+    for name in ("semantic-evaluation-contract-v11.json",)
+    if not (_ROOT / name).exists()
+]
+
 
 def _architecture_result() -> dict:
     groups = {}
@@ -60,6 +70,7 @@ def _external_evidence() -> list[dict]:
     ]
 
 
+@_unittest.skipIf(_MISSING_ARTIFACTS, "Run artifacts not committed: " + ", ".join(_MISSING_ARTIFACTS))
 class AaRc026IntegrationTests(IsolatedAsyncioTestCase):
     async def test_execute_path_sends_auditable_packet_and_report(self) -> None:
         captured: dict = {}

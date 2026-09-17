@@ -1586,20 +1586,39 @@ async def reject_pending_action(
         raise PersistenceError("Could not reject the pending action.") from error
 
 
-async def verify_audit_chain() -> dict[str, Any]:
+async def verify_audit_chain(limit: int = 5000) -> dict[str, Any]:
+    """Verify the audit hash chain over a bounded, most-recent window.
+
+    Full-table scans do not scale (every audit event in one fetch). We verify
+    the newest ``limit`` events, anchored at the stored previous_hash of the
+    first event in the window, so tampering inside the window is still
+    detected and the result stays honest about its coverage.
+    """
     pool = await _get_pool()
     try:
         rows = await pool.fetch(
             """
             SELECT event_id, session_id, run_id, action_id, event_type,
                    tool_name, status, safe_metadata, previous_hash, event_hash
-            FROM audit_events
-            ORDER BY event_id ASC
-            """
+            FROM (
+                SELECT event_id
+                FROM audit_events
+                ORDER BY event_id DESC
+                LIMIT $1
+            ) recent
+            JOIN audit_events a USING (event_id)
+            ORDER BY a.event_id ASC
+            """,
+            limit,
         )
     except Exception as error:
         raise PersistenceError("Could not read the audit chain.") from error
-    previous_hash: str | None = None
+    if rows:
+        # The window anchor: trust the first event's stored previous_hash and
+        # verify forward linkage from there.
+        previous_hash: str | None = rows[0]["previous_hash"]
+    else:
+        previous_hash = None
     for row in rows:
         safe_metadata = row["safe_metadata"]
         if isinstance(safe_metadata, str):
@@ -1631,6 +1650,7 @@ async def verify_audit_chain() -> dict[str, Any]:
         "status": "READY",
         "verified": True,
         "event_count": len(rows),
+        "window_limited": len(rows) == limit,
         "safe_error_code": None,
     }
 

@@ -31,6 +31,7 @@ from persistence import (
     PersistenceError,
     create_original_source,
     delete_original_source,
+    find_document_by_hash,
     search_fts_document_chunks,
     search_vector_document_chunks,
     store_document,
@@ -321,6 +322,30 @@ async def ingest_document(
             "chunk_count": 0,
             "file_hash": file_hash,
             "original_available": False,
+        }
+
+    # Deduplicate by content hash before paying extraction/embedding costs.
+    existing = await find_document_by_hash(file_hash)
+    if existing is not None:
+        logger.info(
+            json.dumps(
+                {
+                    "duplicate": True,
+                    "existing_document_id": existing["document_id"],
+                    "filename": filename,
+                    "file_hash": file_hash,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return {
+            "duplicate": True,
+            "document_id": existing["document_id"],
+            "filename": existing["filename"],
+            "status": "duplicate",
+            "chunk_count": existing["chunk_count"],
+            "file_hash": file_hash,
+            "original_available": True,
         }
 
     source_id = str(uuid4())

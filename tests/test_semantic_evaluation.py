@@ -23,6 +23,19 @@ ROOT = Path(__file__).parent.parent
 CONTRACT_PATH = ROOT / "semantic-evaluation-contract-v1.json"
 BASELINE_PATH = ROOT / "baseline-real-v6-phase0-complete.json"
 
+# Run artifacts from Replit-era evaluation runs are not committed to the repo.
+# Skip this suite until they are regenerated (tracked in the project issues).
+_MISSING_ARTIFACTS = [
+    name
+    for name in ("baseline-real-v6-phase0-complete.json",)
+    if not (ROOT / name).exists()
+]
+if _MISSING_ARTIFACTS:
+    raise unittest.SkipTest(
+        "Run artifacts not committed (regenerate per project issues): "
+        + ", ".join(_MISSING_ARTIFACTS)
+    )
+
 
 class SemanticEvaluationTests(unittest.TestCase):
     @classmethod

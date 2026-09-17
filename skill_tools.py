@@ -13,14 +13,15 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-from urllib.request import Request as UrlRequest
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, Request as UrlRequest
+from urllib.request import build_opener, urlopen
 
 
 logger = logging.getLogger("ahmed_agent.web_search")
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 PAGE_FETCH_TIMEOUT_SECONDS = 15
+MAX_PAGE_BYTES = 2 * 1024 * 1024  # 2 MiB cap on fetched page bodies
 MAX_QUERY_LENGTH = 1000
 MAX_RESULTS = 10
 MAX_RESEARCH_QUERIES = 3
@@ -137,6 +138,44 @@ def _is_public_ip(value: str) -> bool:
     return address.is_global
 
 
+def _is_safe_public_url_sync(url: str) -> bool:
+    """Synchronous SSRF guard (used inside the fetch thread, incl. redirects)."""
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or hostname.lower() in {"localhost", "localhost.localdomain"}
+        or hostname.lower().endswith(".local")
+    ):
+        return False
+    if _is_public_ip(hostname):
+        return True
+    try:
+        addresses = socket.getaddrinfo(
+            hostname,
+            443 if parsed.scheme == "https" else 80,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        return False
+    return bool(addresses) and all(_is_public_ip(item[4][0]) for item in addresses)
+
+
+class _SSRFBlockRedirectHandler(HTTPRedirectHandler):
+    """Re-validate every redirect target so a public URL cannot bounce to a private one."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_safe_public_url_sync(newurl):
+            raise HTTPError(newurl, code, "Blocked redirect to unsafe URL", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_PAGE_OPENER = build_opener(_SSRFBlockRedirectHandler)
+
+
 async def _is_safe_public_url(url: str) -> bool:
     parsed = urlparse(url)
     hostname = parsed.hostname
@@ -171,10 +210,14 @@ def _fetch_page_sync(url: str) -> tuple[str, str]:
             "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
         },
     )
-    with urlopen(request, timeout=PAGE_FETCH_TIMEOUT_SECONDS) as response:
+    with _SAFE_PAGE_OPENER.open(request, timeout=PAGE_FETCH_TIMEOUT_SECONDS) as response:
         content_type = response.headers.get_content_type()
         charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="replace"), content_type
+        body = response.read(MAX_PAGE_BYTES + 1)
+        if len(body) > MAX_PAGE_BYTES:
+            body = body[:MAX_PAGE_BYTES]
+            logger.warning("Page body truncated to %d bytes url=%s", MAX_PAGE_BYTES, url)
+        return body.decode(charset, errors="replace"), content_type
 
 
 async def _fetch_page(

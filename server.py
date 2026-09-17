@@ -971,28 +971,37 @@ async def chat_message(request: Request) -> Response:
             logger.error("Tool event persistence failed error_type=%s", type(error).__name__)
 
     lease_heartbeat = asyncio.create_task(_run_lease_heartbeat(run_uuid))
+    lease_heartbeat_stopped = False
 
     async def stop_lease_heartbeat() -> None:
+        nonlocal lease_heartbeat_stopped
+        if lease_heartbeat_stopped:
+            return
+        lease_heartbeat_stopped = True
         lease_heartbeat.cancel()
         await asyncio.gather(lease_heartbeat, return_exceptions=True)
 
     try:
-        await save_checkpoint(
-            RunStage.MODEL_RUNNING,
-            {"provider": provider, "scope": scope},
-        )
-        result = await run_ahmed(
-            message,
-            message_history=message_history,
-            conversation_id=session_id,
-            run_id=run_uuid,
-            user_id=authenticated_user.user_id if authenticated_user else None,
-            scope=scope,
-            provider=provider,  # type: ignore[arg-type]
-            tool_event_recorder=save_tool_event,
-        )
+        try:
+            await save_checkpoint(
+                RunStage.MODEL_RUNNING,
+                {"provider": provider, "scope": scope},
+            )
+            result = await run_ahmed(
+                message,
+                message_history=message_history,
+                conversation_id=session_id,
+                run_id=run_uuid,
+                user_id=authenticated_user.user_id if authenticated_user else None,
+                scope=scope,
+                provider=provider,  # type: ignore[arg-type]
+                tool_event_recorder=save_tool_event,
+            )
+        finally:
+            # Guarantee the heartbeat never outlives this handler, even on
+            # cancellation (CancelledError is BaseException and skips except blocks).
+            await stop_lease_heartbeat()
     except AgentCoreError as error:
-        await stop_lease_heartbeat()
         provider_status = error.provider_status or error.provider_code or type(error).__name__
         try:
             await finish_run(
