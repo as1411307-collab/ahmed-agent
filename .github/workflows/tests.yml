@@ -14,6 +14,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e . || true
-          pip install pytest pytest-asyncio httpx pydantic pydantic-ai asyncpg fastembed starlette uvicorn aiohttp tenacity
+          pip install pytest pytest-asyncio httpx pydantic pydantic-ai asyncpg fastembed starlette uvicorn aiohttp tenacity python-docx pypdf pymupdf
       - name: Run tests
         run: python -m pytest tests/ -q
