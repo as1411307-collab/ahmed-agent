@@ -38,9 +38,9 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
             "groups": {"foundation": {"status": "PARTIAL"}},
         }
         with (
-            patch("agent_core.inspect_existing_runtime_evidence", return_value=runtime_result),
+            patch("agent_evidence.inspect_existing_runtime_evidence", return_value=runtime_result),
             patch(
-                "agent_core.inspect_existing_architecture_evidence",
+                "agent_evidence.inspect_existing_architecture_evidence",
                 return_value=architecture_result,
             ),
         ):
@@ -67,7 +67,7 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
                 }
             ],
         }
-        with patch("agent_core.existing_web_search", new=AsyncMock(return_value=web_result)) as search:
+        with patch("agent_evidence.existing_web_search", new=AsyncMock(return_value=web_result)) as search:
             context = asyncio.run(
                 prepare_evidence_first_context(
                     "ابحث على الويب عن أحدث التوثيق الرسمي",
@@ -97,7 +97,7 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
             events.append(args)
 
         with patch(
-            "agent_core.existing_web_search",
+            "agent_evidence.existing_web_search",
             new=AsyncMock(return_value=web_result),
         ):
             asyncio.run(
@@ -143,7 +143,7 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
 
         with (
             patch(
-                "agent_core.existing_my_files_search",
+                "agent_evidence.existing_my_files_search",
                 new=AsyncMock(
                     return_value={
                         "results": [
@@ -157,7 +157,7 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
                 ),
             ),
             patch(
-                "agent_core.inspect_existing_source_of_truth",
+                "agent_evidence.inspect_existing_source_of_truth",
                 new=AsyncMock(return_value=source_result),
             ),
         ):
@@ -213,11 +213,11 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
         }
         with (
             patch(
-                "agent_core.inspect_existing_architecture_evidence",
+                "agent_evidence.inspect_existing_architecture_evidence",
                 return_value=architecture_result,
             ),
             patch(
-                "agent_core.existing_web_search",
+                "agent_evidence.existing_web_search",
                 new=AsyncMock(return_value=web_result),
             ),
         ):
@@ -266,11 +266,11 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
         }
         with (
             patch(
-                "agent_core.inspect_existing_runtime_evidence",
+                "agent_evidence.inspect_existing_runtime_evidence",
                 return_value=runtime_result,
             ),
             patch(
-                "agent_core.inspect_existing_architecture_evidence",
+                "agent_evidence.inspect_existing_architecture_evidence",
                 return_value=architecture_result,
             ),
         ):
@@ -320,14 +320,14 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
             external_sources=(),
         )
         with (
-            patch.dict("agent_core.os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False),
-            patch("agent_core._configured_providers", return_value=[]),
-            patch("agent_core._build_agent", return_value=FakeAgent()),
-            patch("agent_core.prepare_evidence_first_context", new=AsyncMock(return_value=preflight)) as preflight_call,
+            patch.dict("agent_providers.os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False),
+            patch("agent_runtime._configured_providers", return_value=[]),
+            patch("agent_runtime._build_agent", return_value=FakeAgent()),
+            patch("agent_runtime.prepare_evidence_first_context", new=AsyncMock(return_value=preflight)) as preflight_call,
         ):
             # The provider candidate is supplied directly so the test never reaches a network.
             candidate = SimpleNamespace(name="gemini", model_name="test-model", model=object())
-            with patch("agent_core._configured_providers", return_value=[candidate]):
+            with patch("agent_runtime._configured_providers", return_value=[candidate]):
                 result = asyncio.run(
                     run_ahmed(
                         "ما هو runtime الفعلي؟",

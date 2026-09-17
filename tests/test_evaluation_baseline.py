@@ -121,19 +121,19 @@ class EvaluationBaselineTests(unittest.TestCase):
 
         with (
             patch(
-                "evaluation_baseline._post_file_upload",
+                "eval_http._post_file_upload",
                 side_effect=fake_upload,
                 create=True,
             ),
-            patch("evaluation_baseline._post_chat_message", side_effect=fake_chat),
-            patch("evaluation_baseline.load_run_evaluation_data", new=fake_load),
+            patch("eval_exec._post_chat_message", side_effect=fake_chat),
+            patch("eval_exec.load_run_evaluation_data", new=fake_load),
             patch(
-                "evaluation_baseline.delete_original_source",
+                "eval_http.delete_original_source",
                 new=fake_cleanup,
                 create=True,
             ),
             patch(
-                "evaluation_baseline.cleanup_evaluation_run",
+                "eval_exec.cleanup_evaluation_run",
                 new=AsyncMock(return_value={"audit_events_preserved": 1}),
             ),
         ):

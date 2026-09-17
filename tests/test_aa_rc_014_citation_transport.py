@@ -95,7 +95,7 @@ class AARC014CitationTransportTests(unittest.IsolatedAsyncioTestCase):
             recorded_events.append(args)
 
         with patch(
-            "agent_core.inspect_existing_source_status",
+            "agent_evidence.inspect_existing_source_status",
             side_effect=inspect_status,
         ):
             context = await prepare_evidence_first_context(

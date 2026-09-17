@@ -63,19 +63,19 @@ class ModelProviderTests(unittest.TestCase):
             fallback_events.append(args)
 
         with (
-            patch("agent_core._configured_providers", return_value=[gemini, openai]),
+            patch("agent_runtime._configured_providers", return_value=[gemini, openai]),
             patch(
-                "agent_core._build_agent",
+                "agent_runtime._build_agent",
                 side_effect=lambda model, _scope: (
                     FailingGemini() if model is gemini.model else WorkingOpenAI()
                 ),
             ) as build_agent,
             patch(
-                "agent_core.provider_health",
+                "agent_runtime.provider_health",
                 side_effect=lambda provider: {"provider": provider, "status": "READY"},
             ),
             patch(
-                "agent_core.prepare_evidence_first_context",
+                "agent_runtime.prepare_evidence_first_context",
                 new=__import__("unittest").mock.AsyncMock(
                     return_value=self._empty_preflight()
                 ),
@@ -117,17 +117,17 @@ class ModelProviderTests(unittest.TestCase):
             fallback_events.append(args)
 
         with (
-            patch("agent_core._configured_providers", return_value=[gemini, openai]),
-            patch("agent_core._build_agent", return_value=WorkingOpenAI()) as build_agent,
+            patch("agent_runtime._configured_providers", return_value=[gemini, openai]),
+            patch("agent_runtime._build_agent", return_value=WorkingOpenAI()) as build_agent,
             patch(
-                "agent_core.provider_health",
+                "agent_runtime.provider_health",
                 side_effect=lambda provider: {
                     "provider": provider,
                     "status": "RATE_LIMITED" if provider == "gemini" else "READY",
                 },
             ),
             patch(
-                "agent_core.prepare_evidence_first_context",
+                "agent_runtime.prepare_evidence_first_context",
                 new=__import__("unittest").mock.AsyncMock(
                     return_value=self._empty_preflight()
                 ),
@@ -160,23 +160,23 @@ class ModelProviderTests(unittest.TestCase):
             return None
 
         with (
-            patch("agent_core._configured_providers", return_value=[gemini, openai]),
-            patch("agent_core._build_agent", return_value=FailingGemini()),
+            patch("agent_runtime._configured_providers", return_value=[gemini, openai]),
+            patch("agent_runtime._build_agent", return_value=FailingGemini()),
             patch(
-                "agent_core.provider_health",
+                "agent_runtime.provider_health",
                 side_effect=lambda provider: {
                     "provider": provider,
                     "status": "READY" if provider == "gemini" else "NOT_CONFIGURED",
                 },
             ),
             patch(
-                "agent_core.prepare_evidence_first_context",
+                "agent_runtime.prepare_evidence_first_context",
                 new=__import__("unittest").mock.AsyncMock(
                     return_value=self._empty_preflight()
                 ),
             ),
-            patch("agent_core.asyncio.sleep", new=no_sleep),
-            patch("agent_core.GEMINI_429_MAX_RETRIES", 2),
+            patch("agent_runtime.asyncio.sleep", new=no_sleep),
+            patch("agent_runtime.GEMINI_429_MAX_RETRIES", 2),
         ):
             with self.assertRaises(AgentCoreError) as context:
                 asyncio.run(run_ahmed("temporary failure", provider="gemini"))

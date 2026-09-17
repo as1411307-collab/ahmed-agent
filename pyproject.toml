@@ -28,6 +28,21 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = [
+    "persistence_docs",
+    "persistence_audit",
+    "persistence_events",
+    "persistence_runs",
+    "persistence_core",
+    "eval_grading",
+    "eval_metrics",
+    "eval_exec",
+    "eval_http",
+    "eval_tools",
+    "eval_schema",
+    "agent_runtime",
+    "agent_providers",
+    "agent_evidence",
+    "agent_consts",
     "academic_benchmark",
     "academic_search",
     "agent_core",
