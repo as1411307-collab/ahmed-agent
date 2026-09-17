@@ -13,7 +13,6 @@ jobs:
           python-version: "3.13"
       - name: Install dependencies
         run: |
-          pip install -e . || true
-          pip install pytest pytest-asyncio httpx pydantic pydantic-ai asyncpg fastembed starlette uvicorn aiohttp tenacity python-docx pypdf pymupdf
+          pip install ".[dev]" || pip install pytest pytest-asyncio httpx pydantic pydantic-ai asyncpg fastembed starlette uvicorn python-docx pypdf mcp
       - name: Run tests
         run: python -m pytest tests/ -q

@@ -1,19 +1,63 @@
 [project]
-name = "repl-nix-workspace"
-version = "0.1.0"
-description = "Add your description here"
+name = "ahmed-agent"
+version = "1.0.0"
+description = "Ahmed Agent — single-owner personal AI agent (Starlette + PydanticAI + PostgreSQL)"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "asyncpg>=0.31.0",
-    "docx>=0.2.4",
     "fastembed>=0.8.0",
     "mcp>=2.1.1",
     "pydantic>=2.13.5",
     "pydantic-ai>=2.42.0",
-    "pydantic-ai-slim>=2.42.0",
-    "pymupdf>=1.28.2",
     "pypdf>=6.18.1",
     "python-docx>=1.2.0",
     "starlette>=1.6.0",
     "uvicorn>=0.52.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "academic_benchmark",
+    "academic_search",
+    "agent_core",
+    "alerting",
+    "architecture_evidence",
+    "auth",
+    "config",
+    "doctor",
+    "embeddings",
+    "evaluation_aa_rc_002",
+    "evaluation_aa_rc_026",
+    "evaluation_baseline",
+    "evaluation_source_bindings",
+    "evidence_citations",
+    "evidence_core",
+    "github_search",
+    "github_smoke",
+    "independent_semantic_evaluator",
+    "my_files",
+    "original_source_storage",
+    "persistence",
+    "policy",
+    "request_routing",
+    "run_state",
+    "runtime_evidence",
+    "search_benchmark",
+    "search_fabric",
+    "semantic_evaluation",
+    "server",
+    "skill_tools",
+    "source_of_truth",
+    "source_status",
 ]

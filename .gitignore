@@ -9,3 +9,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 .DS_Store
+
+# Python build artifacts
+*.egg-info/
+__pycache__/
