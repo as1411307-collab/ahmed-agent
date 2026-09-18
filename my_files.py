@@ -293,6 +293,33 @@ def build_chunks(
     return chunks
 
 
+def _duplicate_ingest_result(
+    existing: dict[str, Any],
+    file_hash: str,
+    filename: str,
+) -> dict[str, Any]:
+    logger.info(
+        json.dumps(
+            {
+                "duplicate": True,
+                "existing_document_id": existing["document_id"],
+                "filename": filename,
+                "file_hash": file_hash,
+            },
+            separators=(",", ":"),
+        )
+    )
+    return {
+        "duplicate": True,
+        "document_id": existing["document_id"],
+        "filename": existing["filename"],
+        "status": "duplicate",
+        "chunk_count": existing["chunk_count"],
+        "file_hash": file_hash,
+        "original_available": True,
+    }
+
+
 async def ingest_document(
     *,
     document_id: str,
@@ -327,26 +354,7 @@ async def ingest_document(
     # Deduplicate by content hash before paying extraction/embedding costs.
     existing = await find_document_by_hash(file_hash)
     if existing is not None:
-        logger.info(
-            json.dumps(
-                {
-                    "duplicate": True,
-                    "existing_document_id": existing["document_id"],
-                    "filename": filename,
-                    "file_hash": file_hash,
-                },
-                separators=(",", ":"),
-            )
-        )
-        return {
-            "duplicate": True,
-            "document_id": existing["document_id"],
-            "filename": existing["filename"],
-            "status": "duplicate",
-            "chunk_count": existing["chunk_count"],
-            "file_hash": file_hash,
-            "original_available": True,
-        }
+        return _duplicate_ingest_result(existing, file_hash, filename)
 
     source_id = str(uuid4())
     await create_original_source(
@@ -376,7 +384,7 @@ async def ingest_document(
             )
     except FileProcessingError as error:
         try:
-            await store_document(
+            stored = await store_document(
                 document_id=document_id,
                 filename=filename,
                 mime_type=mime_type,
@@ -386,6 +394,15 @@ async def ingest_document(
                 source_id=source_id,
                 source_sha256=file_hash,
             )
+            if not stored:
+                # Lost the dedup race: another upload of the same bytes won.
+                await delete_original_source(source_id=source_id)
+                winner = await find_document_by_hash(file_hash)
+                if winner is not None:
+                    return _duplicate_ingest_result(winner, file_hash, filename)
+                raise PersistenceError(
+                    "Duplicate document conflict but no existing row found."
+                )
             await update_original_source_extraction_status(
                 source_id=source_id,
                 status=error.status,
@@ -405,7 +422,7 @@ async def ingest_document(
         }
 
     try:
-        await store_document(
+        stored = await store_document(
             document_id=document_id,
             filename=filename,
             mime_type=mime_type,
@@ -415,6 +432,15 @@ async def ingest_document(
             source_id=source_id,
             source_sha256=file_hash,
         )
+        if not stored:
+            # Lost the dedup race: another upload of the same bytes won.
+            await delete_original_source(source_id=source_id)
+            winner = await find_document_by_hash(file_hash)
+            if winner is not None:
+                return _duplicate_ingest_result(winner, file_hash, filename)
+            raise PersistenceError(
+                "Duplicate document conflict but no existing row found."
+            )
         await update_original_source_extraction_status(
             source_id=source_id,
             status="fts_ready",

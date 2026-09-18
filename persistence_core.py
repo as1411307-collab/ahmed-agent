@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import json
 import os
 import socket
@@ -10,6 +11,8 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 class PersistenceError(RuntimeError):
@@ -174,9 +177,30 @@ async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
                     WHERE idempotency_key IS NOT NULL;
                 """
             )
-            _schema_ready = True
         except Exception as error:
             raise PersistenceError("Could not initialize policy persistence.") from error
+
+        # Hardening: enforce one row per file_hash so a duplicate upload racing
+        # past the application-level check cannot insert twice. Kept outside the
+        # block above and failure-tolerant on purpose: a pre-dedup-era database
+        # may still hold duplicate file_hash rows, and failing here would brick
+        # startup for existing installs. When the index cannot be built, the
+        # ON CONFLICT path in store_document degrades to a plain INSERT and the
+        # application-level find_document_by_hash check remains the guard.
+        try:
+            await pool.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS documents_file_hash_key
+                    ON documents (file_hash);
+                """
+            )
+        except Exception as error:
+            logger.warning(
+                "documents_file_hash_key unique index not created "
+                "(existing duplicate file_hash rows?): %s",
+                error,
+            )
+        _schema_ready = True
 
 
 async def _get_pool() -> asyncpg.Pool:

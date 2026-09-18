@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
@@ -133,17 +134,54 @@ def _open_rate_limit(provider: ProviderName) -> None:
     )
 
 
+# Lazily-built provider model instances, keyed by (provider, credentials).
+# Each model owns an httpx client; building one per request churns TCP/TLS
+# connections for zero benefit, so instances are shared for the process
+# lifetime. A credential change (key rotation) yields a new cache key, and the
+# stale entry for that provider is evicted so old keys are not kept alive.
+_model_cache: dict[tuple[str, str, str | None], Model] = {}
+
+
+def _clear_model_cache() -> None:
+    _model_cache.clear()
+
+
+_ModelT = TypeVar("_ModelT", bound=Model)
+
+
+def _cached_model(
+    cache_key: tuple[str, str, str | None],
+    build: Callable[[], _ModelT],
+) -> _ModelT:
+    model = _model_cache.get(cache_key)
+    if model is not None:
+        return model
+    model = build()
+    for stale_key in [
+        key for key in _model_cache if key[0] == cache_key[0] and key != cache_key
+    ]:
+        del _model_cache[stale_key]
+    _model_cache[cache_key] = model
+    return model
+
+
 def _gemini_model(api_key: str) -> GoogleModel:
-    return GoogleModel(
-        GEMINI_MODEL,
-        provider=GoogleProvider(api_key=api_key),
+    return _cached_model(
+        ("gemini", api_key, None),
+        lambda: GoogleModel(
+            GEMINI_MODEL,
+            provider=GoogleProvider(api_key=api_key),
+        ),
     )
 
 
 def _openai_model(api_key: str, base_url: str) -> OpenAIChatModel:
-    return OpenAIChatModel(
-        OPENAI_MODEL,
-        provider=OpenAIProvider(api_key=api_key, base_url=base_url),
+    return _cached_model(
+        ("openai", api_key, base_url),
+        lambda: OpenAIChatModel(
+            OPENAI_MODEL,
+            provider=OpenAIProvider(api_key=api_key, base_url=base_url),
+        ),
     )
 
 

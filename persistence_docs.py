@@ -352,13 +352,30 @@ async def store_document(
     chunks: Sequence[Any],
     source_id: str | None = None,
     source_sha256: str | None = None,
-) -> None:
+) -> bool:
+    """Store a document and its chunks.
+
+    Returns True when the row was inserted. Returns False when a row with the
+    same file_hash already existed (unique index documents_file_hash_key);
+    in that case nothing is written and the caller must treat the upload as a
+    duplicate of the existing document.
+    """
     pool = await _get_pool()
     try:
         async with pool.acquire() as connection:
             async with connection.transaction():
-                await connection.execute(
-                    """
+                # ON CONFLICT needs the unique arbiter index; on legacy
+                # databases where it could not be created (pre-existing
+                # duplicate file_hash rows) fall back to a plain INSERT and
+                # let the application-level hash check remain the guard.
+                has_hash_index = await connection.fetchval(
+                    "SELECT to_regclass('documents_file_hash_key') IS NOT NULL"
+                )
+                conflict_clause = (
+                    "ON CONFLICT (file_hash) DO NOTHING" if has_hash_index else ""
+                )
+                inserted_id = await connection.fetchval(
+                    f"""
                     INSERT INTO documents (
                         document_id,
                         filename,
@@ -374,6 +391,8 @@ async def store_document(
                         $1::uuid, $2, $3, 'upload', $4, $5, $6::uuid, $7,
                         $8
                     )
+                    {conflict_clause}
+                    RETURNING document_id
                     """,
                     document_id,
                     filename,
@@ -384,6 +403,8 @@ async def store_document(
                     source_sha256,
                     source_id is not None,
                 )
+                if inserted_id is None:
+                    return False
                 if chunks:
                     await connection.executemany(
                         """
@@ -411,6 +432,7 @@ async def store_document(
                             for chunk in chunks
                         ],
                     )
+                return True
     except Exception as error:
         raise PersistenceError("Could not store the uploaded document.") from error
 

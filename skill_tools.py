@@ -1,10 +1,12 @@
 import asyncio
+import http.client
 import ipaddress
 import json
 import logging
 import os
 import re
 import socket
+import ssl
 import time
 import uuid
 from collections import defaultdict
@@ -12,9 +14,9 @@ from html.parser import HTMLParser
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-from urllib.request import HTTPRedirectHandler, Request as UrlRequest
-from urllib.request import build_opener, urlopen
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 
 logger = logging.getLogger("ahmed_agent.web_search")
@@ -22,6 +24,8 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 PAGE_FETCH_TIMEOUT_SECONDS = 15
 MAX_PAGE_BYTES = 2 * 1024 * 1024  # 2 MiB cap on fetched page bodies
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MAX_QUERY_LENGTH = 1000
 MAX_RESULTS = 10
 MAX_RESEARCH_QUERIES = 3
@@ -138,63 +142,71 @@ def _is_public_ip(value: str) -> bool:
     return address.is_global
 
 
-def _is_safe_public_url_sync(url: str) -> bool:
-    """Synchronous SSRF guard (used inside the fetch thread, incl. redirects)."""
-    parsed = urlparse(url)
+class _UnsafeTargetError(Exception):
+    """A URL or redirect target failed SSRF validation (scheme/host/IP checks)."""
+
+
+def _validate_url_parts(parsed) -> bool:
+    """Non-DNS SSRF checks: scheme, hostname, no credentials, no local names."""
     hostname = parsed.hostname
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not hostname
-        or parsed.username
-        or parsed.password
-        or hostname.lower() in {"localhost", "localhost.localdomain"}
-        or hostname.lower().endswith(".local")
-    ):
-        return False
-    if _is_public_ip(hostname):
-        return True
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and hostname
+        and not parsed.username
+        and not parsed.password
+        and hostname.lower() not in {"localhost", "localhost.localdomain"}
+        and not hostname.lower().endswith(".local")
+    )
+
+
+def _resolve_public_addresses(hostname: str, port: int):
+    """Resolve a host once and require every answer to be a public IP.
+
+    Returns the getaddrinfo() list on success, None when resolution fails or
+    any resolved address is not globally routable. Numeric hosts resolve
+    locally without DNS traffic.
+    """
     try:
-        addresses = socket.getaddrinfo(
-            hostname,
-            443 if parsed.scheme == "https" else 80,
-            type=socket.SOCK_STREAM,
-        )
+        addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except OSError:
+        return None
+    if not addresses:
+        return None
+    if not all(_is_public_ip(item[4][0]) for item in addresses):
+        return None
+    return addresses
+
+
+def _effective_port(parsed) -> int:
+    try:
+        return parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return -1
+
+
+def _is_safe_public_url_sync(url: str) -> bool:
+    """Synchronous SSRF guard (used inside the fetch thread)."""
+    parsed = urlparse(url)
+    if not _validate_url_parts(parsed):
         return False
-    return bool(addresses) and all(_is_public_ip(item[4][0]) for item in addresses)
-
-
-class _SSRFBlockRedirectHandler(HTTPRedirectHandler):
-    """Re-validate every redirect target so a public URL cannot bounce to a private one."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not _is_safe_public_url_sync(newurl):
-            raise HTTPError(newurl, code, "Blocked redirect to unsafe URL", headers, fp)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_SAFE_PAGE_OPENER = build_opener(_SSRFBlockRedirectHandler)
+    port = _effective_port(parsed)
+    if port < 0:
+        return False
+    return _resolve_public_addresses(parsed.hostname, port) is not None
 
 
 async def _is_safe_public_url(url: str) -> bool:
     parsed = urlparse(url)
-    hostname = parsed.hostname
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not hostname
-        or parsed.username
-        or parsed.password
-        or hostname.lower() in {"localhost", "localhost.localdomain"}
-        or hostname.lower().endswith(".local")
-    ):
+    if not _validate_url_parts(parsed):
         return False
-    if _is_public_ip(hostname):
-        return True
+    port = _effective_port(parsed)
+    if port < 0:
+        return False
     try:
         addresses = await asyncio.to_thread(
             socket.getaddrinfo,
-            hostname,
-            443 if parsed.scheme == "https" else 80,
+            parsed.hostname,
+            port,
             type=socket.SOCK_STREAM,
         )
     except OSError:
@@ -202,22 +214,121 @@ async def _is_safe_public_url(url: str) -> bool:
     return bool(addresses) and all(_is_public_ip(item[4][0]) for item in addresses)
 
 
-def _fetch_page_sync(url: str) -> tuple[str, str]:
-    request = UrlRequest(
-        url,
-        headers={
-            "User-Agent": "Ahmed-Agent/1.0",
-            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
-        },
+def _connect_pinned_socket(addresses, timeout: float):
+    """Connect to one of the pre-resolved, pre-validated addresses.
+
+    DNS is never consulted here, which closes the TOCTOU window between
+    validation and connect (DNS rebinding).
+    """
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in addresses:
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as error:
+            last_error = error
+            if sock is not None:
+                sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("No pinned address could be reached.")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection over a pinned socket; the hostname is used only for the Host header."""
+
+    def __init__(self, host: str, addresses, **kwargs) -> None:
+        super().__init__(host, **kwargs)
+        self._pinned_addresses = addresses
+
+    def connect(self) -> None:
+        self.sock = _connect_pinned_socket(self._pinned_addresses, self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection over a pinned socket; SNI and certificate verification use the real hostname."""
+
+    def __init__(self, host: str, addresses, **kwargs) -> None:
+        super().__init__(host, **kwargs)
+        self._pinned_addresses = addresses
+
+    def connect(self) -> None:
+        sock = _connect_pinned_socket(self._pinned_addresses, self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _pinned_connection(scheme: str, hostname: str, addresses, port: int, timeout: float):
+    if scheme == "https":
+        return _PinnedHTTPSConnection(
+            hostname,
+            addresses,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+    return _PinnedHTTPConnection(hostname, addresses, port=port, timeout=timeout)
+
+
+def _pinned_request(url: str) -> tuple[int, object, bytes]:
+    """One pinned GET: resolve once, validate, connect to the validated IP."""
+    parsed = urlparse(url)
+    if not _validate_url_parts(parsed):
+        raise _UnsafeTargetError(f"Blocked unsafe URL: {url}")
+    port = _effective_port(parsed)
+    if port < 0:
+        raise _UnsafeTargetError(f"Blocked URL with invalid port: {url}")
+    addresses = _resolve_public_addresses(parsed.hostname, port)
+    if addresses is None:
+        raise _UnsafeTargetError(
+            f"Blocked non-public or unresolvable host: {parsed.hostname}"
+        )
+    connection = _pinned_connection(
+        parsed.scheme, parsed.hostname, addresses, port, PAGE_FETCH_TIMEOUT_SECONDS
     )
-    with _SAFE_PAGE_OPENER.open(request, timeout=PAGE_FETCH_TIMEOUT_SECONDS) as response:
-        content_type = response.headers.get_content_type()
-        charset = response.headers.get_content_charset() or "utf-8"
+    path = urlunparse(("", "", parsed.path or "/", parsed.params, parsed.query, ""))
+    try:
+        connection.request(
+            "GET",
+            path,
+            headers={
+                "User-Agent": "Ahmed-Agent/1.0",
+                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
         body = response.read(MAX_PAGE_BYTES + 1)
         if len(body) > MAX_PAGE_BYTES:
             body = body[:MAX_PAGE_BYTES]
             logger.warning("Page body truncated to %d bytes url=%s", MAX_PAGE_BYTES, url)
+        return response.status, response.headers, body
+    finally:
+        connection.close()
+
+
+def _fetch_page_sync(url: str) -> tuple[str, str]:
+    """Fetch a page over the DNS-pinned transport, following redirects manually.
+
+    Every redirect hop is validated and pinned again, so a public URL cannot
+    bounce to a private address. Redirects are capped at _MAX_REDIRECTS hops.
+    """
+    current_url = url
+    for _hop in range(_MAX_REDIRECTS + 1):
+        status, headers, body = _pinned_request(current_url)
+        location = headers.get("Location") if status in _REDIRECT_STATUSES else None
+        if location:
+            current_url = urljoin(current_url, location)
+            continue
+        if status < 200 or status >= 300:
+            raise HTTPError(current_url, status, f"HTTP error {status}", headers, None)
+        content_type = headers.get_content_type()
+        charset = headers.get_content_charset() or "utf-8"
         return body.decode(charset, errors="replace"), content_type
+    raise _UnsafeTargetError(f"Too many redirects while fetching {url}")
 
 
 async def _fetch_page(
