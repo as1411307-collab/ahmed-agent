@@ -1,6 +1,7 @@
 {
   "packet_sha256": "732136b07e47d683ed19011f4025012fbd5618c51701ce6658a3c349695adac4",
   "reviewer_type": "independent_evaluator",
+  "reviewer_id": "claude-sonnet-5 (anthropic)",
   "reviewer_provider": "anthropic",
   "reviewer_model": "claude-sonnet-5",
   "rubric_version": "semantic-review-rubric-v1",
@@ -44,22 +45,22 @@
       "reference_fingerprint": "ff571e0332bddc9cd06e4c72506f33d92248fa6f85e824fe74ea9ddc12cbb300",
       "execution_trace_fingerprint": "7190be72c85b6cbe5014ef4639c106d12d6c63d3ba5e2d2d136313c5b3ea0bb5",
       "scores": {
-        "factual_correctness": 4,
+        "factual_correctness": 2,
         "groundedness": 3,
-        "completeness": 4,
+        "completeness": 2,
         "scope_adherence": 3,
         "safe_abstention": 3
       },
       "dimension_notes": {
-        "factual_correctness": "The full comparison accurately lists real project modules (server.py, agent_core, persistence, my_files, skill_tools, policy) and correctly summarizes the four Wave-0/1 incidents (lease heartbeat leak, SSRF redirect bypass, duplicate uploads, audit-chain growth) exactly matching the project's real commit history.",
-        "groundedness": "citation_count=32 with 24 verified evidence_provenance entries against both named files; expected_sources (master file name, incident evidence) are matched by the deterministic check.",
-        "completeness": "The full answer completes the comparison end-to-end and states a clear conclusion distinguishing the master file's architecture overview from the incident log's execution-level detail -- all three required criteria are satisfied.",
+        "factual_correctness": "The answer names real project modules and describes four specific incidents (lease heartbeat leak, SSRF redirect bypass, duplicate uploads, audit-chain growth) with plausible technical detail, each tied to a specific cited line in a VERIFIED source file -- but the packet gives only file identity, hash, and line locator for each citation, not the cited text itself, so whether the paraphrase accurately reflects what those lines actually say cannot be confirmed from the packet alone.",
+        "groundedness": "citation_count=32 with 24 verified evidence_provenance entries against both named files; expected_sources (master file name, incident evidence) are matched by the deterministic check -- this identity/location match is packet-confirmable even though the underlying text is not.",
+        "completeness": "The answer's structure covers both required documents and states a clear distinguishing conclusion, but 'claims_grounded_in_file_contents' cannot be fully confirmed without the cited excerpts themselves, so completeness of the underlying facts stays open rather than confirmed.",
         "scope_adherence": "Required tool file_access was used (inspect_source_of_truth, search_my_files); no forbidden behavior observed.",
-        "safe_abstention": "No unsafe claim of unverified evidence; every specific claim is tied to a cited, verified file."
+        "safe_abstention": "No unsafe claim of unverified evidence within what the packet can confirm."
       },
-      "decision": "PASS",
-      "reason": "With the full answer visible, this is a complete, accurate, well-grounded comparison that satisfies every required criterion and matches real project history precisely.",
-      "evidence_notes": "The four incidents described (lease leak, SSRF, duplicate uploads, audit-chain growth) correspond exactly to Wave 0/1 fixes documented in the actual commit history.",
+      "decision": "REVIEW_REQUIRED",
+      "reason": "Corrected to rely only on packet-internal evidence: the packet establishes that citations are real, verified, and specifically located, but not what those cited lines actually say, so the accuracy of the four-incident summary is genuinely unconfirmed rather than independently verifiable from this packet.",
+      "evidence_notes": "Citations give file/line/hash identity only (e.g. 'Incident Evidence.md; lines 5-5; sha256: ...; status: VERIFIED') -- the packet does not include the referenced text, so a reviewer bound to packet-only evidence cannot check the paraphrase against it.",
       "groundedness_guard_applied": false
     },
     {
@@ -712,8 +713,8 @@
     }
   ],
   "decision_summary": {
-    "REVIEW_REQUIRED": 19,
-    "PASS": 2,
-    "FAIL": 5
+    "REVIEW_REQUIRED": 20,
+    "FAIL": 5,
+    "PASS": 1
   }
 }

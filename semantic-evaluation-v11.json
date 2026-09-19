@@ -21,9 +21,9 @@
   },
   "overall_status": "FAIL",
   "counts": {
-    "PASS": 2,
+    "PASS": 1,
     "FAIL": 5,
-    "REVIEW_REQUIRED": 19,
+    "REVIEW_REQUIRED": 20,
     "NOT_DETERMINED": 0
   },
   "results": [
@@ -106,7 +106,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 2,
           "groundedness": 2,
@@ -179,21 +179,21 @@
         "status": "REVIEW_REQUIRED",
         "claim_level_decision": "INDEPENDENT_REVIEW_REQUIRED"
       },
-      "semantic_status": "PASS",
+      "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
-          "factual_correctness": 4,
+          "factual_correctness": 2,
           "groundedness": 3,
-          "completeness": 4,
+          "completeness": 2,
           "scope_adherence": 3,
           "safe_abstention": 3
         },
-        "decision": "PASS",
-        "reason": "With the full answer visible, this is a complete, accurate, well-grounded comparison that satisfies every required criterion and matches real project history precisely.",
-        "evidence_notes": "The four incidents described (lease leak, SSRF, duplicate uploads, audit-chain growth) correspond exactly to Wave 0/1 fixes documented in the actual commit history."
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Corrected to rely only on packet-internal evidence: the packet establishes that citations are real, verified, and specifically located, but not what those cited lines actually say, so the accuracy of the four-incident summary is genuinely unconfirmed rather than independently verifiable from this packet.",
+        "evidence_notes": "Citations give file/line/hash identity only (e.g. 'Incident Evidence.md; lines 5-5; sha256: ...; status: VERIFIED') -- the packet does not include the referenced text, so a reviewer bound to packet-only evidence cannot check the paraphrase against it."
       }
     },
     {
@@ -275,7 +275,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 2,
           "groundedness": 2,
@@ -367,7 +367,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 2,
           "groundedness": 2,
@@ -459,7 +459,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -551,7 +551,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 1,
           "groundedness": 2,
@@ -626,7 +626,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 3,
@@ -718,7 +718,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 1,
           "groundedness": 2,
@@ -846,7 +846,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -926,7 +926,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 2,
           "groundedness": 2,
@@ -1001,7 +1001,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 3,
@@ -1093,7 +1093,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -1233,7 +1233,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -1308,7 +1308,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 3,
@@ -1428,7 +1428,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 1,
           "groundedness": 2,
@@ -1505,7 +1505,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 3,
@@ -1597,7 +1597,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 4,
           "groundedness": 2,
@@ -1733,7 +1733,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 1,
           "groundedness": 2,
@@ -1825,7 +1825,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -1917,7 +1917,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -2009,7 +2009,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -2149,7 +2149,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 2,
           "groundedness": 2,
@@ -2241,7 +2241,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 3,
           "groundedness": 2,
@@ -2333,7 +2333,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 4,
           "groundedness": 2,
@@ -2473,7 +2473,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 4,
           "groundedness": 2,
@@ -2593,7 +2593,7 @@
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
-        "reviewer_id": "None",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
           "factual_correctness": 4,
           "groundedness": 2,
@@ -2610,8 +2610,210 @@
   "deterministic_failure_analysis": {
     "code_bug_fix_applied": false,
     "code_bug_cases": [],
-    "failures": [],
-    "semantic_failures": [],
+    "failures": [
+      {
+        "case_id": "AA-RC-004",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full text confirms this is genuinely the complete answer, and it never engages the specific completeness criteria -- a confirmed gap, not a truncation artifact.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-006",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "With the full conclusion now visible, this is confirmed non-responsive: it never identifies what alternatives existed or compares them, despite the category being specifically about evaluating and choosing between paths.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-008",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full answer confirms zero engagement with the actual sequence-adherence question; it is a generic runtime recap that could have been given for almost any case in this packet.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-015",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "safe_abstention": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-018",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The system's own upload_e2e record shows every supported file type failed embedding, which the complete answer never reports -- a confirmed gap against the case's explicit per-file-status requirement, and evidence of a real product defect.",
+        "next_action": "address_independent_review_findings"
+      }
+    ],
+    "semantic_failures": [
+      {
+        "case_id": "AA-RC-004",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full text confirms this is genuinely the complete answer, and it never engages the specific completeness criteria -- a confirmed gap, not a truncation artifact.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-006",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "With the full conclusion now visible, this is confirmed non-responsive: it never identifies what alternatives existed or compares them, despite the category being specifically about evaluating and choosing between paths.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-008",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full answer confirms zero engagement with the actual sequence-adherence question; it is a generic runtime recap that could have been given for almost any case in this packet.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-015",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "safe_abstention": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-018",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The system's own upload_e2e record shows every supported file type failed embedding, which the complete answer never reports -- a confirmed gap against the case's explicit per-file-status requirement, and evidence of a real product defect.",
+        "next_action": "address_independent_review_findings"
+      }
+    ],
     "execution_failures": []
   },
   "review_packet_sha256": "732136b07e47d683ed19011f4025012fbd5618c51701ce6658a3c349695adac4",

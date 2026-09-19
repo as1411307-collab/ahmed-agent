@@ -236,12 +236,111 @@ class SemanticEvaluationTests(unittest.TestCase):
             report["deterministic_failure_analysis"]["failures"],
         )
 
+    def test_review_driven_failure_appears_in_failure_analysis(self) -> None:
+        # apply_reviews() can push semantic_status to FAIL purely from an
+        # independent reviewer's scores, with no deterministic dimension
+        # ever reaching FAIL on its own. The failure-analysis section is
+        # built from deterministic dimension statuses only, so without this
+        # case it silently drops every review-driven failure even though
+        # counts/overall_status already report it.
+        expected = self.packet["cases"][0]
+        # evaluate_baseline() injects _artifact_file_sha256 before rebuilding
+        # the packet internally, so its packet_sha256 differs from
+        # self.packet's (built in setUpClass without that injection). Read
+        # the real one back from an unreviewed run instead of assuming it
+        # matches self.packet.
+        baseline_packet_sha256 = evaluate_baseline(
+            contract=self.contract,
+            baseline_path=BASELINE_PATH,
+        )["review_packet_sha256"]
+        review_document = {
+            "packet_sha256": baseline_packet_sha256,
+            "reviewer_type": "independent_evaluator",
+            "reviewer_id": "claude-sonnet-5 (anthropic)",
+            "independence_declaration": True,
+            "runtime_model_self_grading": False,
+            "reviews": [
+                {
+                    "case_id": expected["case_id"],
+                    "reference_fingerprint": expected["reference_fingerprint"],
+                    "execution_trace_fingerprint": expected[
+                        "execution_trace_fingerprint"
+                    ],
+                    "scores": {
+                        **{dimension: 2 for dimension in DIMENSIONS},
+                        "factual_correctness": 1,
+                    },
+                    "decision": "FAIL",
+                    "reason": "The answer never engages the question the case is about.",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            review_path = Path(directory) / "review.json"
+            review_path.write_text(
+                json.dumps(review_document, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            report = evaluate_baseline(
+                contract=self.contract,
+                baseline_path=BASELINE_PATH,
+                review_path=review_path,
+            )
+        result = next(
+            item for item in report["results"] if item["case_id"] == expected["case_id"]
+        )
+        self.assertEqual(result["semantic_status"], "FAIL")
+        analysis_case_ids = {
+            item["case_id"]
+            for item in report["deterministic_failure_analysis"]["failures"]
+        }
+        self.assertIn(expected["case_id"], analysis_case_ids)
+        entry = next(
+            item
+            for item in report["deterministic_failure_analysis"]["failures"]
+            if item["case_id"] == expected["case_id"]
+        )
+        self.assertEqual(entry["classification"], "independent_review_failure")
+        self.assertEqual(
+            report["deterministic_failure_analysis"]["semantic_failures"],
+            report["deterministic_failure_analysis"]["failures"],
+        )
+
     def test_packet_redacts_sensitive_answer_material(self) -> None:
         serialized = json.dumps(self.packet, ensure_ascii=False)
         self.assertNotIn("owner-secret", serialized)
         self.assertNotIn("AHMED_OWNER_TOKEN", serialized)
         for case in self.packet["cases"]:
             self.assertTrue(case["observations"]["sensitive_content_redacted"])
+
+    def test_redacts_bare_unlabeled_api_keys(self) -> None:
+        # A credential with no "api_key:"/"token:" label (e.g. leaked inline
+        # in a code snippet the model quoted back) must still be caught by
+        # its own shape -- otherwise raising final_output_redacted's length
+        # limit risks shipping a live secret to an independent reviewer.
+        # Fixtures are built by concatenating a vendor prefix with a filler
+        # body at runtime, rather than as one literal, so this test file
+        # never contains a contiguous credential-shaped string on disk.
+        # Mixed-case+digit filler is a valid body for every pattern below
+        # except AKIA (digits/uppercase only, checked separately).
+        mixed_filler = "aB3dE6fG9hI2jK5lM8nO1pQ4rS7tU0vW"
+        upper_filler = "AB3DE6FG9HI2JK5LM8NO1PQ4RS7TU0VW"
+        vendor_prefixes = [
+            "sk-" + "proj-",
+            "sk-" + "ant-api03-",
+            "gh" + "p_",
+            "github_pat_" + "11",
+            "AIza" + "SyD-",
+            "xoxb" + "-",
+        ]
+        for prefix in vendor_prefixes:
+            sample = f"here is the key: {prefix}{mixed_filler}"
+            redacted = semantic_evaluation._redact_text(sample)
+            self.assertIn("[REDACTED]", redacted, sample)
+        akia_sample = f"here is the key: {'AKIA'}{upper_filler}"
+        self.assertIn(
+            "[REDACTED]", semantic_evaluation._redact_text(akia_sample), akia_sample
+        )
 
     def test_packet_preserves_bounded_external_provenance_without_verifying_it(self) -> None:
         trace = {

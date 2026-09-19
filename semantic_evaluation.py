@@ -107,6 +107,22 @@ def _redact_text(value: str, *, limit: int = 600) -> str:
         "[REDACTED]",
         redacted,
     )
+    # Bare, unlabeled credentials in known vendor formats -- these carry no
+    # "api_key:"/"token:" label for the pattern above to key off, so a raw
+    # sk-..., ghp_..., or AIza... string surviving in model output must be
+    # caught by its own shape instead.
+    redacted = re.sub(
+        r"\b(?:"
+        r"sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}"  # OpenAI / Anthropic style
+        r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub tokens
+        r"|github_pat_[A-Za-z0-9_]{20,}"
+        r"|AIza[0-9A-Za-z_-]{30,}"  # Google API key
+        r"|AKIA[0-9A-Z]{12,}"  # AWS access key id
+        r"|xox[baprs]-[A-Za-z0-9-]{10,}"  # Slack tokens
+        r")\b",
+        "[REDACTED]",
+        redacted,
+    )
     redacted = re.sub(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
         "[EMAIL]",
@@ -1017,6 +1033,45 @@ def evaluate_baseline(
             for value in result["dimensions"].values()
         )
     ]
+    # apply_reviews() can also drive semantic_status to FAIL on its own
+    # (an independent reviewer scoring a dimension <=1) without touching
+    # any deterministic dimension status above -- without this, a review
+    # that adds new failures leaves this analysis section empty while
+    # overall_status/counts already report them.
+    review_driven_failures = [
+        {
+            "case_id": result["case_id"],
+            "execution_classification": result.get(
+                "execution_classification",
+                "EXECUTION_OK",
+            ),
+            "dimensions": {
+                dimension: {
+                    "status": "FAIL",
+                    "score": score,
+                    "reason": "The independent reviewer scored this dimension as failing.",
+                }
+                for dimension, score in (
+                    (result.get("independent_review") or {}).get("scores") or {}
+                ).items()
+                if isinstance(score, int) and score <= 1
+            },
+            "classification": "independent_review_failure",
+            "code_bug_confirmed": False,
+            "reason": (
+                (result.get("independent_review") or {}).get("reason")
+                or "The independent reviewer scored this case as FAIL."
+            ),
+            "next_action": "address_independent_review_findings",
+        }
+        for result in evaluations
+        if result["semantic_status"] == "FAIL"
+        and result.get("independent_review") is not None
+        and not any(
+            value["status"] == "FAIL" for value in result["dimensions"].values()
+        )
+    ]
+    deterministic_failures = deterministic_failures + review_driven_failures
     execution_failures = [
         {
             "case_id": result["case_id"],
