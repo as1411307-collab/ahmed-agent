@@ -3,10 +3,50 @@ from __future__ import annotations
 import unittest
 
 from independent_semantic_evaluator import (
+    REVIEW_DIMENSIONS,
     IndependentReviewerError,
+    build_independent_review_document,
     validate_reviewer_identity,
     validate_review_payload,
 )
+
+
+def _full_score_completion(*, decision: str, groundedness: int) -> dict:
+    scores = {dimension: 3 for dimension in REVIEW_DIMENSIONS}
+    scores["groundedness"] = groundedness
+    return {
+        "scores": scores,
+        "dimension_notes": {
+            dimension: f"Fixture note explaining the {dimension} judgement in detail."
+            for dimension in REVIEW_DIMENSIONS
+        },
+        "decision": decision,
+        "reason": "Fixture reason with enough detail to satisfy the minimum length check.",
+        "evidence_notes": "Fixture evidence notes with enough detail to satisfy validation.",
+    }
+
+
+def _packet_with_one_case(*, expected_sources: list[str], trace_extra: dict) -> dict:
+    return {
+        "packet_sha256": "p" * 64,
+        "cases": [
+            {
+                "case_id": "TEST-EXTERNAL-001",
+                "producer_provider": "gemini",
+                "producer_model": "gemini-test",
+                "reference_fingerprint": "a" * 64,
+                "execution_trace_fingerprint": "b" * 64,
+                "reference_assertions": {
+                    "groundedness": {"expected_sources": expected_sources},
+                },
+                "trace": {
+                    "citations": ["[1]"],
+                    "sources": ["[1]"],
+                    **trace_extra,
+                },
+            }
+        ],
+    }
 
 
 class IndependentSemanticEvaluatorTests(unittest.TestCase):
@@ -84,3 +124,63 @@ class IndependentSemanticEvaluatorTests(unittest.TestCase):
                 payload,
                 deterministic_groundedness_status="FAIL",
             )
+
+    def test_deterministic_groundedness_matches_external_evidence_provenance(self) -> None:
+        # A web-search-derived case: citations/sources hold only opaque markers
+        # ('[1]'), and the real source (an official-looking documentation page)
+        # only appears in trace.external_evidence_provenance. Groundedness must
+        # be derivable from that field too, not just citations/sources.
+        packet = _packet_with_one_case(
+            expected_sources=["Official Example Docs"],
+            trace_extra={
+                "external_evidence_provenance": [
+                    {
+                        "url": "https://docs.example.test/guide",
+                        "title": "Official Example Docs",
+                        "source_identity": "external_web_search",
+                    }
+                ],
+            },
+        )
+        document = build_independent_review_document(
+            packet=packet,
+            baseline={"execution_config": {"provider": "gemini"}},
+            reviewer_provider="anthropic",
+            reviewer_model="claude-test",
+            completion=lambda prompt: _full_score_completion(
+                decision="PASS", groundedness=3
+            ),
+        )
+        review = document["reviews"][0]
+        self.assertEqual(review["scores"]["groundedness"], 3)
+        self.assertEqual(review["decision"], "PASS")
+        self.assertNotIn("groundedness_guard_applied", review)
+
+    def test_deterministic_groundedness_ignores_unrelated_external_evidence(self) -> None:
+        # Same shape, but the external source does not match expected_sources:
+        # groundedness must stay capped below the PASS threshold.
+        packet = _packet_with_one_case(
+            expected_sources=["Official Example Docs"],
+            trace_extra={
+                "external_evidence_provenance": [
+                    {
+                        "url": "https://blog.example.test/post",
+                        "title": "An unrelated blog post",
+                        "source_identity": "external_web_search",
+                    }
+                ],
+            },
+        )
+        document = build_independent_review_document(
+            packet=packet,
+            baseline={"execution_config": {"provider": "gemini"}},
+            reviewer_provider="anthropic",
+            reviewer_model="claude-test",
+            completion=lambda prompt: _full_score_completion(
+                decision="PASS", groundedness=4
+            ),
+        )
+        review = document["reviews"][0]
+        self.assertLess(review["scores"]["groundedness"], 3)
+        self.assertNotEqual(review["decision"], "PASS")
+        self.assertTrue(review["groundedness_guard_applied"])

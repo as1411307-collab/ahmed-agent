@@ -263,6 +263,12 @@ def build_independent_review_document(
             [
                 *[str(value) for value in trace.get("citations", [])],
                 *[str(value) for value in trace.get("sources", [])],
+                *[
+                    str(item.get(field) or "")
+                    for item in trace.get("external_evidence_provenance", [])
+                    if isinstance(item, dict)
+                    for field in ("url", "title", "source_identity")
+                ],
             ]
         ).casefold()
         bound_aa_rc_026_provenance = (

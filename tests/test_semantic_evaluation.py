@@ -274,6 +274,24 @@ class SemanticEvaluationTests(unittest.TestCase):
             "UNVERIFIED_EXTERNAL",
         )
 
+    def test_final_output_redacted_keeps_a_full_answer_for_the_reviewer(self) -> None:
+        # final_output_redacted is what an independent reviewer judges the answer
+        # against, unlike answer_excerpt_redacted (an intentionally short
+        # excerpt). It must not be capped down to excerpt length, or a
+        # multi-part answer's conclusion/recommendation is cut before the
+        # reviewer ever sees it.
+        long_answer = "س" * 4000 + " التوصية النهائية هنا." + "ص" * 100
+        trace = {
+            "case_id": "AA-RC-TEST",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "output": {"answer": long_answer},
+        }
+        packet_trace = semantic_evaluation._packet_trace_for_independent_reviewer(trace)
+        self.assertGreater(len(packet_trace["final_output_redacted"]), 600)
+        self.assertIn("التوصية النهائية هنا", packet_trace["final_output_redacted"])
+
     def test_aa_rc_026_groundedness_accepts_bound_project_and_openai_provenance(self) -> None:
         contract_case = next(
             case for case in self.contract["cases"] if case["case_id"] == "AA-RC-026"

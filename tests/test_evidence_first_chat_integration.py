@@ -115,6 +115,55 @@ class EvidenceFirstChatIntegrationTests(unittest.TestCase):
         self.assertEqual(external[0]["verification_status"], "UNVERIFIED_EXTERNAL")
         self.assertEqual(external[0]["source_identity"], "external_web_search")
 
+    def test_web_preflight_classifies_official_openai_domains(self) -> None:
+        # Official vendor documentation must be tagged distinctly from generic
+        # web search results, since independent_semantic_evaluator.py's
+        # AA-RC-026 groundedness guard specifically requires
+        # source_identity == 'external_openai_official' before it will accept
+        # OpenAI documentation as deterministically grounded evidence.
+        web_result = {
+            "ok": True,
+            "results": [
+                {
+                    "title": "Agents SDK",
+                    "url": "https://platform.openai.com/docs/guides/agents-sdk",
+                    "snippet": "Official OpenAI Agents SDK guide.",
+                },
+                {
+                    "title": "Unrelated documentation",
+                    "url": "https://docs.example.test/current",
+                    "snippet": "Not an OpenAI source.",
+                },
+            ],
+        }
+        events: list[tuple[object, ...]] = []
+
+        async def record(*args: object) -> None:
+            events.append(args)
+
+        with patch(
+            "agent_evidence.existing_web_search",
+            new=AsyncMock(return_value=web_result),
+        ):
+            asyncio.run(
+                prepare_evidence_first_context(
+                    "ابحث على الويب عن توثيق OpenAI الرسمي",
+                    scope="WEB",
+                    tool_event_recorder=record,
+                )
+            )
+
+        external = events[0][3]["external_evidence_provenance"]
+        by_url = {item["url"]: item for item in external}
+        self.assertEqual(
+            by_url["https://platform.openai.com/docs/guides/agents-sdk"]["source_identity"],
+            "external_openai_official",
+        )
+        self.assertEqual(
+            by_url["https://docs.example.test/current"]["source_identity"],
+            "external_web_search",
+        )
+
     def test_my_files_preflight_persists_authorized_source_identity(self) -> None:
         source_result = {
             "evidence_status": "VERIFIED",

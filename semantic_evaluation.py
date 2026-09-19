@@ -694,7 +694,7 @@ def _packet_trace_for_independent_reviewer(trace: dict[str, Any]) -> dict[str, A
         "execution_error": trace.get("execution_error"),
         "provider": trace.get("provider"),
         "model": trace.get("model"),
-        "final_output_redacted": _redact_text(_trace_answer(trace)),
+        "final_output_redacted": _redact_text(_trace_answer(trace), limit=16000),
         "tool_names": sorted(_trace_tools(trace)),
         "citations": [
             _redact_text(str(value), limit=600)
