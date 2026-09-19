@@ -302,7 +302,7 @@ def _duplicate_ingest_result(
         json.dumps(
             {
                 "duplicate": True,
-                "existing_document_id": existing["document_id"],
+                "existing_document_id": str(existing["document_id"]),
                 "filename": filename,
                 "file_hash": file_hash,
             },
@@ -311,7 +311,7 @@ def _duplicate_ingest_result(
     )
     return {
         "duplicate": True,
-        "document_id": existing["document_id"],
+        "document_id": str(existing["document_id"]),
         "filename": existing["filename"],
         "status": "duplicate",
         "chunk_count": existing["chunk_count"],

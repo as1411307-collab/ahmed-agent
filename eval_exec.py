@@ -462,6 +462,10 @@ async def run_real_cases(
         for case in selected
         if case_execution_capability(case)["executable_by_current_agent_tools"]
     ]
+    # Lazy import: eval_metrics imports from eval_exec, so a top-level import
+    # here would close an import cycle (regression guard for the Wave-3 split).
+    from eval_metrics import build_scoreboard
+
     scoreboard = build_scoreboard(executable_cases, traces)
     coverage = Counter(result["execution_status"] for result in case_results)
     rate_limited = sum(

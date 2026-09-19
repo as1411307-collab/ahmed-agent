@@ -2,11 +2,28 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
 from persistence_core import PersistenceError, _get_pool
+
+
+_FTS_TOKEN_LIMIT = 12
+
+
+def _fts_match_query(query: str) -> str:
+    """Build an OR tsquery from the query's tokens.
+
+    plainto_tsquery ANDs every term, so a natural-language question with any
+    word absent from the corpus (e.g. "راجع"، "من فضلك") matches nothing at
+    all — even when the documents answer the question. OR-matching with rank
+    ordering retrieves the chunks sharing the most terms instead. Tokens are
+    quoted lexemes, so operator characters inside them stay literal.
+    """
+    tokens = [t for t in re.split(r"\s+", query.strip()) if t][:_FTS_TOKEN_LIMIT]
+    return " | ".join("'" + token.replace("'", "''") + "'" for token in tokens)
 
 
 async def find_document_by_hash(file_hash: str) -> dict[str, Any] | None:
@@ -25,7 +42,12 @@ async def find_document_by_hash(file_hash: str) -> dict[str, Any] | None:
         )
     except Exception as error:
         raise PersistenceError("Could not check for a duplicate document.") from error
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    result = dict(row)
+    # asyncpg returns UUID objects; callers hand this dict to JSON responses.
+    result["document_id"] = str(result["document_id"])
+    return result
 
 
 async def create_original_source(
@@ -528,17 +550,17 @@ async def search_fts_document_chunks(query: str, top_k: int) -> list[dict[str, A
                 c.content,
                 ts_rank_cd(
                     to_tsvector('simple', c.content),
-                    plainto_tsquery('simple', $1)
+                    to_tsquery('simple', $1)
                 ) AS rank
             FROM document_chunks c
             JOIN documents d ON d.document_id = c.document_id
             WHERE d.status IN ('ready', 'fts_ready', 'embedding_failed')
               AND to_tsvector('simple', c.content)
-                  @@ plainto_tsquery('simple', $1)
+                  @@ to_tsquery('simple', $1)
             ORDER BY rank DESC, c.document_id, c.chunk_index
             LIMIT $2
             """,
-            query,
+            _fts_match_query(query),
             top_k,
         )
     except Exception as error:

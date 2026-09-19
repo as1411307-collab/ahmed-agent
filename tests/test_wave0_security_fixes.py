@@ -266,6 +266,31 @@ class MyFilesDedupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["document_id"], existing["document_id"])
         delete_mock.assert_awaited_once()
 
+    async def test_duplicate_result_is_json_serializable_with_uuid(self) -> None:
+        """Regression: asyncpg returns UUID objects; the duplicate response
+        must stay JSON-serializable (found via live E2E 500)."""
+        import uuid
+        import my_files
+
+        data = b"hello duplicate world"
+        existing = {
+            "document_id": uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            "filename": "notes.md",
+            "status": "fts_ready",
+            "chunk_count": 3,
+        }
+        with patch.object(
+            my_files, "find_document_by_hash", new=AsyncMock(return_value=existing)
+        ):
+            result = await my_files.ingest_document(
+                document_id="22222222-2222-2222-2222-222222222222",
+                filename="copy-of-notes.md",
+                mime_type="text/markdown",
+                data=data,
+            )
+        json.dumps(result)
+        self.assertEqual(result["document_id"], str(existing["document_id"]))
+
 
 class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
     """Issue #14: store_document inserts with ON CONFLICT and reports races."""
@@ -342,6 +367,51 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         insert_sql = next(s for s in connection.statements if "INSERT INTO documents" in s)
         self.assertNotIn("ON CONFLICT", insert_sql)
+
+    async def test_fts_query_is_or_matched_and_escaped(self) -> None:
+        """Long natural-language queries must still retrieve partial matches.
+
+        Regression: plainto_tsquery ANDs every term, so one absent word
+        (common in Arabic questions) returned zero rows even when documents
+        contained the answer.
+        """
+        import persistence_docs
+
+        tsquery = persistence_docs._fts_match_query(
+            "راجع الملف الفعلي لـ Ahmed Agent ولا تعتمد على الذاكرة"
+        )
+        self.assertIn("|", tsquery)
+        self.assertIn("'راجع'", tsquery)
+        # single quotes inside a token are escaped (lexeme quoting)
+        escaped = persistence_docs._fts_match_query("it's a test")
+        self.assertIn("'it''s'", escaped)
+        # empty / whitespace-only query yields an empty tsquery (matches nothing)
+        self.assertEqual(persistence_docs._fts_match_query("   "), "")
+
+    async def test_find_document_by_hash_returns_str_uuid(self) -> None:
+        import uuid
+        import persistence_docs
+
+        row = {
+            "document_id": uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            "filename": "notes.md",
+            "status": "fts_ready",
+            "chunk_count": 3,
+        }
+
+        class _Pool:
+            async def fetchval(self, *args):
+                raise AssertionError("not used")
+
+            async def fetchrow(self, *args):
+                return row
+
+        with patch.object(
+            persistence_docs, "_get_pool", new=AsyncMock(return_value=_Pool())
+        ):
+            result = await persistence_docs.find_document_by_hash("abc123")
+        self.assertEqual(result["document_id"], "11111111-1111-1111-1111-111111111111")
+        json.dumps(result)
 
     async def test_unique_index_migration_is_tolerant(self) -> None:
         """A pre-existing duplicate file_hash must not brick schema init."""

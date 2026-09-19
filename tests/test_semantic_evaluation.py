@@ -88,15 +88,26 @@ class SemanticEvaluationTests(unittest.TestCase):
             self.assertTrue(result["run_id"])
 
     def test_deterministic_citation_failure_is_explainable(self) -> None:
+        # Grading-rule test with a synthetic trace: whether the live model
+        # happens to cite sources in a given run is model behavior, not a
+        # deterministic rule. The rule itself — a required-source case whose
+        # trace carries no citation fails with an explainable reason — is what
+        # must be pinned (consistent with the neighboring synthetic tests).
         contract_case = next(
             case for case in self.contract["cases"] if case["case_id"] == "AA-RC-002"
         )
-        trace = next(
-            trace
-            for trace in self.baseline["cases"]
-            if trace["case_id"] == "AA-RC-002"
+        result = evaluate_case(
+            contract_case=contract_case,
+            trace={
+                "case_id": "AA-RC-002",
+                "run_id": "no-citation-run",
+                "execution_status": "EXECUTED",
+                "tool_calls": [{"name": "search_my_files", "status": "success"}],
+                "citations": [],
+                "sources": [],
+                "output": {"answer": "الملفان متطابقان في البنية العامة ويختلفان في التفاصيل."},
+            },
         )
-        result = evaluate_case(contract_case=contract_case, trace=trace)
         self.assertEqual(result["dimensions"]["groundedness"]["status"], "FAIL")
         self.assertIn("no citation", result["dimensions"]["groundedness"]["reason"])
 
@@ -352,7 +363,29 @@ class SemanticEvaluationTests(unittest.TestCase):
             )
 
     def test_partial_independent_review_does_not_pass_unreviewed_cases(self) -> None:
+        # Rule under test: a PASS review cannot override a deterministic
+        # groundedness FAIL. Whether a given live baseline case happens to fail
+        # deterministically is model behavior, so the failing evaluation is
+        # built from a synthetic no-citation trace (as the neighboring tests
+        # do); the review itself is bound to the real packet fingerprints.
         expected = self.packet["cases"][0]
+        contract_case = next(
+            case
+            for case in self.contract["cases"]
+            if case["case_id"] == expected["case_id"]
+        )
+        failing_evaluation = evaluate_case(
+            contract_case=contract_case,
+            trace={
+                "case_id": expected["case_id"],
+                "run_id": "deterministic-failure-run",
+                "execution_status": "EXECUTED",
+                "tool_calls": [{"name": "search_my_files", "status": "success"}],
+                "citations": [],
+                "sources": [],
+                "output": {"answer": "إجابة بلا أي استشهاد بالمصادر المطلوبة."},
+            },
+        )
         review_document = {
             "packet_sha256": self.packet["packet_sha256"],
             "reviewer_type": "human",
@@ -377,8 +410,13 @@ class SemanticEvaluationTests(unittest.TestCase):
             contract=self.contract,
             baseline_path=BASELINE_PATH,
         )
+        others = [
+            item
+            for item in report["results"]
+            if item["case_id"] != expected["case_id"]
+        ]
         merged = apply_reviews(
-            evaluations=report["results"],
+            evaluations=[failing_evaluation, *others],
             packet=self.packet,
             review_document=review_document,
         )

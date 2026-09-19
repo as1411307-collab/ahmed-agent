@@ -397,6 +397,10 @@ def build_scoreboard(
     cases: list[dict[str, Any]],
     traces: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    # Lazy import: eval_grading imports from eval_metrics, so a top-level
+    # import here would close an import cycle (regression guard for Wave-3).
+    from eval_grading import deterministic_grade, validate_evaluation_trace
+
     results = [
         (
             validate_evaluation_trace(traces[case["id"]]),
