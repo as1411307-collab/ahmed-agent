@@ -17,7 +17,7 @@ class ReflectOnToolFailureTests(unittest.TestCase):
     def test_first_failure_asks_the_model_to_act_not_just_narrate(self) -> None:
         deps = AgentDeps(tool_failure_notes=[])
         sig = _tool_call_signature(query="q")
-        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
+        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig, 1)
         self.assertIsInstance(retry, ModelRetry)
         self.assertIn("web_search", retry.message)
         self.assertIn("ValueError", retry.message)
@@ -39,23 +39,26 @@ class ReflectOnToolFailureTests(unittest.TestCase):
         # nothing else is invented or stripped.
         deps = AgentDeps(tool_failure_notes=[])
         sig = _tool_call_signature(query="q")
-        retry = _reflect_on_tool_failure(deps, "search_my_files", "TAVILY_NOT_CONFIGURED", sig)
+        retry = _reflect_on_tool_failure(
+            deps, "search_my_files", "TAVILY_NOT_CONFIGURED", sig, 1
+        )
         self.assertIn("TAVILY_NOT_CONFIGURED", retry.message)
 
     def test_records_a_note_for_the_first_failure(self) -> None:
         deps = AgentDeps(tool_failure_notes=[])
         sig = _tool_call_signature(query="q")
-        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig, 1)
         self.assertEqual(len(deps.tool_failure_notes), 1)
         self.assertEqual(deps.tool_failure_notes[0]["tool"], "web_search")
         self.assertEqual(deps.tool_failure_notes[0]["attempt"], 1)
         self.assertEqual(deps.tool_failure_notes[0]["reason"], "ValueError")
+        self.assertEqual(deps.tool_failure_notes[0]["run_step"], 1)
 
     def test_second_failure_of_the_identical_call_escalates(self) -> None:
         deps = AgentDeps(tool_failure_notes=[])
         sig = _tool_call_signature(query="same query", mode="FAST")
-        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
-        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig, 1)
+        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig, 2)
         self.assertIn("failed 2 times in a row", retry.message)
         self.assertIn("Do not repeat it unchanged again", retry.message)
         self.assertEqual(len(deps.tool_failure_notes), 2)
@@ -67,34 +70,47 @@ class ReflectOnToolFailureTests(unittest.TestCase):
         deps = AgentDeps(tool_failure_notes=[])
         sig_a = _tool_call_signature(query="first query", mode="FAST")
         sig_b = _tool_call_signature(query="second query", mode="FAST")
-        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a)
-        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_b)
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a, 1)
+        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_b, 1)
         self.assertIn("Do not reply with text yet", retry.message)
         self.assertNotIn("in a row", retry.message)
 
-    def test_any_success_clears_every_standing_failure_note(self) -> None:
-        # "Failed N times in a row" must only be true if nothing else
-        # succeeded in between. A success on a *different* call (or a
-        # different signature of the same tool) has to reset an unrelated
-        # call's streak too -- clearing only the note for the call that
-        # just succeeded would leave stale streaks lying around.
+    def test_a_later_rounds_success_clears_an_earlier_rounds_failure(self) -> None:
+        # Sequential case: A fails in round 1, something succeeds in round
+        # 2, and A is retried (still round 2 or later) and fails again --
+        # this must read as a fresh first failure, not a continuation of
+        # round 1's streak.
         deps = AgentDeps(tool_failure_notes=[])
         sig_a = _tool_call_signature(query="a")
-        sig_b = _tool_call_signature(query="b")
-        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a)
-        _reflect_on_tool_failure(deps, "github_search", "ValueError", sig_b)
-        _clear_tool_failure_streak(deps)  # e.g. an unrelated call succeeded
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a, run_step=1)
+        _clear_tool_failure_streak(deps, run_step=2)  # something else succeeded in round 2
         self.assertEqual(deps.tool_failure_notes, [])
-        # A's exact same call failing again now reads as a fresh first
-        # failure, not a continuation of the earlier streak.
-        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a)
+        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a, run_step=2)
         self.assertNotIn("in a row", retry.message)
+
+    def test_a_concurrent_siblings_success_does_not_erase_a_same_round_failure(
+        self,
+    ) -> None:
+        # PydanticAI's default 'graceful' end strategy runs function tools
+        # from the *same* model-response round concurrently. If call A
+        # fails and sibling call B succeeds in that same round (run_step),
+        # B's success must NOT erase A's failure -- A was never resolved,
+        # it just happened to share a round with something that worked.
+        deps = AgentDeps(tool_failure_notes=[])
+        sig_a = _tool_call_signature(query="a")
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a, run_step=1)
+        _clear_tool_failure_streak(deps, run_step=1)  # sibling B succeeded, same round
+        self.assertEqual(len(deps.tool_failure_notes), 1)
+        # A is retried, still failing, in the same or a later round: this is
+        # genuinely its second consecutive failure and must escalate.
+        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig_a, run_step=1)
+        self.assertIn("failed 2 times in a row", retry.message)
 
     def test_different_tools_are_tracked_independently(self) -> None:
         deps = AgentDeps(tool_failure_notes=[])
         sig = _tool_call_signature(query="q")
-        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
-        retry = _reflect_on_tool_failure(deps, "github_search", "ValueError", sig)
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig, 1)
+        retry = _reflect_on_tool_failure(deps, "github_search", "ValueError", sig, 1)
         self.assertNotIn("in a row", retry.message)
         self.assertEqual(
             [note["tool"] for note in deps.tool_failure_notes],
@@ -107,10 +123,10 @@ class ReflectOnToolFailureTests(unittest.TestCase):
         # crash, and simply cannot escalate since nothing is remembered.
         deps = AgentDeps()
         sig = _tool_call_signature(query="q")
-        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
+        retry = _reflect_on_tool_failure(deps, "web_search", "ValueError", sig, 1)
         self.assertIsInstance(retry, ModelRetry)
         self.assertNotIn("in a row", retry.message)
-        _clear_tool_failure_streak(deps)  # must not crash either
+        _clear_tool_failure_streak(deps, 1)  # must not crash either
 
     def test_guidance_can_be_overridden_for_an_idempotent_action(self) -> None:
         # test_sensitive_action's idempotency key is derived from its
@@ -124,6 +140,7 @@ class ReflectOnToolFailureTests(unittest.TestCase):
             "test_sensitive_action",
             "RuntimeError",
             sig,
+            1,
             guidance="retry with the reason text UNCHANGED",
             escalated_guidance="do not change the reason text",
         )
@@ -134,6 +151,7 @@ class ReflectOnToolFailureTests(unittest.TestCase):
             "test_sensitive_action",
             "RuntimeError",
             sig,
+            1,
             guidance="retry with the reason text UNCHANGED",
             escalated_guidance="do not change the reason text",
         )

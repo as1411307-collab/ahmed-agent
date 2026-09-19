@@ -137,6 +137,7 @@ def _reflect_on_tool_failure(
     tool_name: str,
     reason: str,
     call_signature: str,
+    run_step: int,
     *,
     guidance: str = _DEFAULT_RETRY_GUIDANCE,
     escalated_guidance: str = _DEFAULT_ESCALATED_GUIDANCE,
@@ -153,6 +154,12 @@ def _reflect_on_tool_failure(
     would otherwise become the run's final `str` output and end the turn),
     and is told explicitly once the *exact same call* has already failed more
     than once in this same turn.
+
+    ``run_step`` (``RunContext.run_step``) identifies which model-response
+    round this call belongs to: PydanticAI's default 'graceful' end strategy
+    runs function tools from the *same* round concurrently, so a note also
+    records the round it happened in -- see ``_clear_tool_failure_streak``,
+    which must not let a concurrent sibling's success erase this failure.
 
     ``reason`` must already be safe to show the model and echo back to the
     user: pass ``type(error).__name__`` for a raised exception (never
@@ -174,7 +181,13 @@ def _reflect_on_tool_failure(
             1 for note in deps.tool_failure_notes if note.get("key") == key
         )
         deps.tool_failure_notes.append(
-            {"tool": tool_name, "key": key, "reason": reason, "attempt": prior_attempts + 1}
+            {
+                "tool": tool_name,
+                "key": key,
+                "reason": reason,
+                "attempt": prior_attempts + 1,
+                "run_step": run_step,
+            }
         )
     attempt_number = prior_attempts + 1
     if attempt_number == 1:
@@ -189,18 +202,26 @@ def _reflect_on_tool_failure(
     )
 
 
-def _clear_tool_failure_streak(deps: AgentDeps) -> None:
-    """Reset all standing failure memory once any tool call succeeds.
+def _clear_tool_failure_streak(deps: AgentDeps, run_step: int) -> None:
+    """Reset failure memory from earlier rounds once any tool call succeeds.
 
     "Failed N times in a row" is only accurate if nothing else has succeeded
-    in between. Clearing only the note for the call that just succeeded
-    would leave an unrelated call's streak intact across an intervening
-    success, and a later coincidental repeat of that old failing call would
-    be misreported as an uninterrupted run of failures.
+    in between. But PydanticAI's default 'graceful' end strategy runs
+    function tools from the *same* model-response round concurrently, so a
+    success and a failure can be siblings dispatched together rather than
+    genuinely sequential -- clearing everything unconditionally would let a
+    failing call escape escalation forever as long as it's paired with any
+    successful sibling in the same round. Only notes from a strictly earlier
+    round are cleared; a same-round sibling failure is left standing since it
+    was never actually resolved by that success.
     """
 
     if deps.tool_failure_notes is not None:
-        deps.tool_failure_notes.clear()
+        deps.tool_failure_notes[:] = [
+            note
+            for note in deps.tool_failure_notes
+            if note.get("run_step", run_step) >= run_step
+        ]
 
 
 def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[AgentDeps, str]:
@@ -229,7 +250,11 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"mode": mode},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "web_search", type(error).__name__, call_signature
+                ctx.deps,
+                "web_search",
+                type(error).__name__,
+                call_signature,
+                ctx.run_step,
             ) from error
 
         safe_metadata: dict[str, Any] = {"mode": mode}
@@ -267,8 +292,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "web_search",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                ctx.run_step,
             )
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         if isinstance(result, dict):
             return {
                 **result,
@@ -309,7 +335,11 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"intent": intent, "scope": "WEB"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "academic_search", type(error).__name__, call_signature
+                ctx.deps,
+                "academic_search",
+                type(error).__name__,
+                call_signature,
+                ctx.run_step,
             ) from error
 
         ok = result.get("ok", True)
@@ -334,8 +364,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "academic_search",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                ctx.run_step,
             )
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         return {
             **result,
             "data_boundary": data_only_boundary("academic_external"),
@@ -386,7 +417,11 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"intent": intent, "scope": "WEB"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "github_search", type(error).__name__, call_signature
+                ctx.deps,
+                "github_search",
+                type(error).__name__,
+                call_signature,
+                ctx.run_step,
             ) from error
 
         ok = result.get("ok", True)
@@ -410,8 +445,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "github_search",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                ctx.run_step,
             )
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         return {
             **result,
             "data_boundary": data_only_boundary("github_public_api"),
@@ -435,7 +471,11 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "MY_FILES"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "search_my_files", type(error).__name__, call_signature
+                ctx.deps,
+                "search_my_files",
+                type(error).__name__,
+                call_signature,
+                ctx.run_step,
             ) from error
         ok = result.get("ok", True)
         if ctx.deps.tool_event_recorder is not None:
@@ -455,8 +495,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "search_my_files",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                ctx.run_step,
             )
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         return {
             **result,
             "data_boundary": data_only_boundary("uploaded_files"),
@@ -508,6 +549,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 policy.tool_name,
                 type(error).__name__,
                 call_signature,
+                ctx.run_step,
                 guidance=(
                     "decide why this likely failed, then retry this exact "
                     "same action with the reason text UNCHANGED -- do not "
@@ -522,7 +564,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "action cannot be completed right now"
                 ),
             ) from error
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         action_id = str(pending_action["action_id"])
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -569,8 +611,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "inspect_runtime_evidence",
                 type(error).__name__,
                 call_signature,
+                ctx.run_step,
             ) from error
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -621,8 +664,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "inspect_architecture_evidence",
                 type(error).__name__,
                 call_signature,
+                ctx.run_step,
             ) from error
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -679,7 +723,11 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     },
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_source_status", type(error).__name__, call_signature
+                ctx.deps,
+                "inspect_source_status",
+                type(error).__name__,
+                call_signature,
+                ctx.run_step,
             ) from error
 
         policy = tool_metadata("inspect_source_status")
@@ -724,7 +772,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         return {
             **result,
             "policy": policy,
@@ -760,6 +808,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 "inspect_source_of_truth",
                 type(error).__name__,
                 call_signature,
+                ctx.run_step,
             ) from error
 
         policy = tool_metadata("inspect_source_of_truth")
@@ -812,7 +861,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
-        _clear_tool_failure_streak(ctx.deps)
+        _clear_tool_failure_streak(ctx.deps, ctx.run_step)
         return {
             **result,
             "policy": policy,
