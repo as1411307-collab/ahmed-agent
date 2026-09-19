@@ -2,7 +2,7 @@
   "packet_version": "semantic-review-packet-v1",
   "contract_version": "semantic-evaluation-contract-v1",
   "contract_sha256": "dd7ff5f35663dcd1d2ca8a54407f15a71f2126c97c06ec70b8a80559d7965882",
-  "baseline_sha256": null,
+  "baseline_sha256": "082dffdd7ba01401fe6f331fa6aab18aef583572eef471652efaba1ce854dd0d",
   "review_policy": {
     "allowed_reviewer_types": [
       "human",
@@ -8606,5 +8606,5 @@
       }
     }
   ],
-  "packet_sha256": "01a5ad2cb84e1858b9f3364fe601585a184f0d1034d30837e4ca68db5f877765"
+  "packet_sha256": "732136b07e47d683ed19011f4025012fbd5618c51701ce6658a3c349695adac4"
 }

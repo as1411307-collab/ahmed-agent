@@ -1,5 +1,5 @@
 {
-  "packet_sha256": "01a5ad2cb84e1858b9f3364fe601585a184f0d1034d30837e4ca68db5f877765",
+  "packet_sha256": "732136b07e47d683ed19011f4025012fbd5618c51701ce6658a3c349695adac4",
   "reviewer_type": "independent_evaluator",
   "reviewer_provider": "anthropic",
   "reviewer_model": "claude-sonnet-5",
@@ -17,22 +17,22 @@
       "reference_fingerprint": "9ef3dc5abc562fc326cd4f678653cf18e22d5750ce7a7c685f223d01ae6a10ee",
       "execution_trace_fingerprint": "cf8d5ce4428f6334afcd7f13cc35f19331cbfab972b04a87d2a69153232dfead",
       "scores": {
-        "factual_correctness": 1,
+        "factual_correctness": 2,
         "groundedness": 2,
-        "completeness": 1,
+        "completeness": 2,
         "scope_adherence": 2,
         "safe_abstention": 2
       },
       "dimension_notes": {
-        "factual_correctness": "The full answer's 'next steps' section recommends generic dev tasks (test the server, add MCP tools, write automated tests) instead of the project's actual next unfinished item, and 'write automated tests' is already done extensively (188 tests exist) -- recommending it as new directly violates the case's own forbidden claim.",
-        "groundedness": "Citations are verified project-file lines (.replit/pyproject.toml/server.py), not the conversation-history source the rubric expects.",
-        "completeness": "The answer never engages the real project-plan state (Waves/Issues); its 'next steps' are generic and one item duplicates already-completed work, so neither 'uses_current_project_state' nor 'does_not_repeat_completed_work' is satisfied.",
-        "scope_adherence": "No forbidden tool is used, but the content itself crosses into the forbidden 'recommend already completed work as new' behavior.",
-        "safe_abstention": "No abstention was required, but presenting an invented generic plan as 'the next steps' without checking the real project state is an unverified claim."
+        "factual_correctness": "The full 'next steps' section (test the server locally, expand MCP tools, check endpoints, add automated tests) is generic engineering advice rather than a reference to the project's own tracked plan/issues; the packet contains no evidence either confirming or ruling out whether this specific work is already done, so the claim's correctness cannot be settled from the packet alone.",
+        "groundedness": "Citations are verified project-file lines (.replit/pyproject.toml/server.py), not the conversation-history source the rubric expects, and they do not establish any project/task-completion state either way.",
+        "completeness": "None of the ten citations discuss task or plan status, so 'uses_current_project_state' cannot be confirmed as satisfied from the packet -- but the packet likewise offers no evidence that the suggested next steps duplicate finished work, so 'does_not_repeat_completed_work' cannot be confirmed violated either.",
+        "scope_adherence": "No forbidden tool is used; no scope violation is evidenced from the packet alone.",
+        "safe_abstention": "No unsafe claim is confirmed from packet-internal evidence; the generic framing is a completeness concern, not a demonstrated safety violation."
       },
-      "decision": "FAIL",
-      "reason": "With the full (untruncated) answer visible, the 'next steps' section is confirmed to recommend already-completed work (writing tests) as new, a direct forbidden-claim violation, not merely an uncertain gap.",
-      "evidence_notes": "The repository already has 188 passing regression tests (tests/ directory); recommending 'write automated tests' as a forward-looking next step misrepresents the project's actual state.",
+      "decision": "REVIEW_REQUIRED",
+      "reason": "Using only packet-internal evidence (no outside knowledge of the project's actual test suite or issue tracker): the citations establish deployment config, not task/plan state, so the answer's fit to 'current project state' is genuinely unconfirmed rather than a demonstrated violation.",
+      "evidence_notes": "All ten citations are runtime/config lines (.replit, pyproject.toml, server.py); none references an issue tracker, plan, or task-completion record the packet could use to confirm or refute the 'next steps' claim.",
       "groundedness_guard_applied": true
     },
     {
@@ -260,22 +260,22 @@
       "reference_fingerprint": "2d648ad4d644818db6a305eea742e80f041d6457e34400fc79b3d4b548002505",
       "execution_trace_fingerprint": "9f50f87ddb0c07f40405856d0e3773e951f0f490c9220317187a5cbf0e337790",
       "scores": {
-        "factual_correctness": 1,
+        "factual_correctness": 2,
         "groundedness": 2,
-        "completeness": 1,
-        "scope_adherence": 2,
+        "completeness": 2,
+        "scope_adherence": 3,
         "safe_abstention": 2
       },
       "dimension_notes": {
-        "factual_correctness": "The full external evidence is six generic marketing/tutorial pages (a beginner web-dev blog, a domain-search tool page, an SEO blog, a GoDaddy guide, a coding-bootcamp comparison blog, and a Facebook group post) -- none relevant to comparing real technical approaches for an AI agent project, and the answer's content is generic 'how to build a portfolio project' advice.",
-        "groundedness": "Six external sources exist, but all are low-authority generic content (including a Facebook post used as a citation), not the kind of comparative technical research the case's repeated-complaint framing calls for.",
-        "completeness": "A shallow, generic comparison (static vs. interactive web projects) is made, but it does not compare real alternatives relevant to the actual decision at hand, and a Facebook group post as a research source is itself a quality failure.",
-        "scope_adherence": "The required tool (web_search) was used, satisfying that narrow scope requirement.",
-        "safe_abstention": "No explicit unsafe claim of depth is stated, but presenting six generic/marketing sources (including social media) as satisfying a 'deeper comparative research' request is misleading about research quality."
+        "factual_correctness": "The packet does not state what the requested comparison topic actually was (only a paraphrase: 'repeated request for deeper comparative web research'), so calling the six results 'off-target for an AI agent project' is an inferred topic, not a packet-established fact; what can be said from the packet alone is that the six sources are generic/low-authority (blogs, a domain-search tool page, and a Facebook group post) and the comparison offered (static vs. interactive web projects) is shallow.",
+        "groundedness": "Six external sources exist (not one, as an earlier draft of this note incorrectly said); their generic nature is a legitimate quality concern, but their relevance cannot be judged against an unknown original topic.",
+        "completeness": "Multiple options are compared (multiple_options_compared is arguably met, if shallowly); whether the comparison is 'grounded in research' relevant to the real request cannot be confirmed without the original prompt, so this stays uncertain rather than confirmed failing.",
+        "scope_adherence": "The required tool (web_search) was used, satisfying that scope requirement.",
+        "safe_abstention": "No unsafe claim is confirmed from packet-internal evidence alone; source quality (including a Facebook post as a citation) is a fair quality concern but not, on its own, a confirmed unsafe claim."
       },
-      "decision": "FAIL",
-      "reason": "With the full external evidence and answer visible, this is confirmed generic, off-target content unrelated to any real technical comparison, including a social-media post used as a citation -- a genuine research-quality failure, not just a thin-source concern.",
-      "evidence_notes": "external_evidence_provenance includes https://www.facebook.com/groups/ElzeroWebSchool/... as a cited source alongside several SEO/marketing blogs, none addressing a substantive technical comparison.",
+      "decision": "REVIEW_REQUIRED",
+      "reason": "Corrected to rely only on packet-internal evidence: six sources exist (not one) and a comparison is attempted, so factual_correctness/completeness cannot be confidently set to 1 without knowing the actual requested topic -- but source quality (a Facebook post used as a citation, generic blogs) remains a legitimate, packet-visible weakness.",
+      "evidence_notes": "external_evidence_provenance lists six sources including https://www.facebook.com/groups/ElzeroWebSchool/... -- a social-media post used as a research citation is a visible quality weakness regardless of the exact original topic.",
       "groundedness_guard_applied": true
     },
     {
@@ -368,22 +368,22 @@
       "reference_fingerprint": "5df705fcbd1beb590010ae823dde2fd8d8ede2fbc32422a9af399b1a510a7ebc",
       "execution_trace_fingerprint": "30124ebba4b40483d9e569829b4a9d88936e5fe70b9fb1e75b089a7604fb0eed",
       "scores": {
-        "factual_correctness": 4,
+        "factual_correctness": 3,
         "groundedness": 3,
-        "completeness": 4,
+        "completeness": 2,
         "scope_adherence": 3,
         "safe_abstention": 3
       },
       "dimension_notes": {
-        "factual_correctness": "The full answer is specific and accurate to the real repository files (SearchProvider/SearchFabric design, wiring in skill_tools.py lines 1289-1293).",
+        "factual_correctness": "The full answer is specific and accurate to the real repository files (SearchProvider/SearchFabric design, wiring in skill_tools.py lines 1289-1293), and correctly avoids asserting live operational health it cannot verify statically.",
         "groundedness": "citation_count=28 with 24 verified evidence_provenance entries against real files; expected_sources ('Ahmed Agent project files') is matched by the deterministic check.",
-        "completeness": "The full answer explicitly reaches the case's central requirement: it states operational status is 'not_asserted' pending live testing and does not mark the unconfigured components as ready -- exactly matching 'unconfigured_components_not_marked_ready'.",
-        "scope_adherence": "Required tool project_file_access was used; no forbidden claim of an unconfigured component being operational is made -- the opposite is explicitly stated.",
+        "completeness": "The answer marks implementation/wiring as 'ready' and says live operational health/API-key validity are 'not_asserted' -- correctly avoiding a false readiness claim -- but it never reports whether configuration (e.g. API keys) is actually present, and never uses a 'needs_setup' classification for anything, so 'configuration_status_reported' is not clearly satisfied.",
+        "scope_adherence": "Required tool project_file_access was used; no forbidden claim of an unconfigured component being operational is made.",
         "safe_abstention": "No unsafe claim; the answer correctly abstains from asserting live operational health it cannot verify statically."
       },
-      "decision": "PASS",
-      "reason": "With the full answer visible, it explicitly distinguishes implemented-and-wired from operationally-verified, satisfying every required criterion with correct, specific, well-grounded content.",
-      "evidence_notes": "The second section explicitly states live operational status and API-key validity are 'not_asserted' and require live testing, directly satisfying the case's core requirement.",
+      "decision": "REVIEW_REQUIRED",
+      "reason": "The answer correctly avoids a false-ready claim (satisfying the case's central forbidden-claim boundary), but conflates 'operational health not asserted' with 'configuration status reported' -- the latter, and any needs_setup classification, is never explicitly addressed, so completeness falls short of PASS.",
+      "evidence_notes": "The answer's second section discusses live operational/API-key *validity* as 'not_asserted', which is about runtime health, not about whether the components are configured -- the case's 'configuration_status_reported' criterion is not directly addressed.",
       "groundedness_guard_applied": false
     },
     {
@@ -712,8 +712,8 @@
     }
   ],
   "decision_summary": {
-    "FAIL": 7,
-    "PASS": 3,
-    "REVIEW_REQUIRED": 16
+    "REVIEW_REQUIRED": 19,
+    "PASS": 2,
+    "FAIL": 5
   }
 }

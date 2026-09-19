@@ -263,11 +263,16 @@ def build_independent_review_document(
             [
                 *[str(value) for value in trace.get("citations", [])],
                 *[str(value) for value in trace.get("sources", [])],
+                # Only source_identity is scanned here, never url/title: those are
+                # freeform text from the external page itself, so matching on them
+                # would let an untrusted search result upgrade groundedness merely
+                # by containing an expected_sources phrase. source_identity is a
+                # controlled label our own code assigns (e.g. "external_openai_official"),
+                # so it carries the same trust guarantee as citations/sources.
                 *[
-                    str(item.get(field) or "")
+                    str(item.get("source_identity") or "")
                     for item in trace.get("external_evidence_provenance", [])
                     if isinstance(item, dict)
-                    for field in ("url", "title", "source_identity")
                 ],
             ]
         ).casefold()
