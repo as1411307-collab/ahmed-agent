@@ -121,11 +121,25 @@ def _tool_call_signature(**kwargs: object) -> str:
     return repr(sorted(kwargs.items(), key=lambda item: item[0]))
 
 
+_DEFAULT_RETRY_GUIDANCE = (
+    "decide why this likely failed, then immediately call a tool again: "
+    "either retry with clearly different arguments or use a different tool"
+)
+_DEFAULT_ESCALATED_GUIDANCE = (
+    "do not repeat it unchanged again -- call a different tool, or if none "
+    "can help, give the user a final honest answer that this capability is "
+    "not working right now"
+)
+
+
 def _reflect_on_tool_failure(
     deps: AgentDeps,
     tool_name: str,
-    error: BaseException,
+    reason: str,
     call_signature: str,
+    *,
+    guidance: str = _DEFAULT_RETRY_GUIDANCE,
+    escalated_guidance: str = _DEFAULT_ESCALATED_GUIDANCE,
 ) -> ModelRetry:
     """Turn a tool failure into a retry prompt carrying this run's failure memory.
 
@@ -140,13 +154,19 @@ def _reflect_on_tool_failure(
     and is told explicitly once the *exact same call* has already failed more
     than once in this same turn.
 
-    Only the exception's type name is ever included, never ``str(error)``:
-    the message crosses the model-provider boundary and can be echoed back to
-    the user, and an underlying error can carry a credential-bearing URL,
-    provider response body, database detail, or local path.
+    ``reason`` must already be safe to show the model and echo back to the
+    user: pass ``type(error).__name__`` for a raised exception (never
+    ``str(error)``, which can carry a credential-bearing URL, provider
+    response body, database detail, or local path), or a tool's own bounded,
+    author-controlled error code/message for an in-band ``{"ok": False}``
+    result (never a raw provider response body).
+
+    ``guidance``/``escalated_guidance`` override the generic "retry with
+    different arguments" advice for a tool where that would be actively
+    wrong (e.g. an idempotent action that must be retried with its
+    arguments unchanged to stay safe).
     """
 
-    reason = type(error).__name__
     key = f"{tool_name}:{call_signature}"
     prior_attempts = 0
     if deps.tool_failure_notes is not None:
@@ -160,34 +180,27 @@ def _reflect_on_tool_failure(
     if attempt_number == 1:
         return ModelRetry(
             f"The `{tool_name}` call failed ({reason}). Do not reply with text "
-            "yet -- decide why this likely failed, then immediately call a "
-            "tool again: either retry with clearly different arguments or use "
-            "a different tool."
+            f"yet -- {guidance}."
         )
     return ModelRetry(
         f"The exact same `{tool_name}` call has now failed {attempt_number} "
-        f"times in a row ({reason}). Do not repeat it unchanged again -- call "
-        "a different tool, or if none can help, give the user a final honest "
-        "answer that this capability is not working right now."
+        f"times in a row ({reason}). {escalated_guidance[0].upper()}"
+        f"{escalated_guidance[1:]}."
     )
 
 
-def _clear_tool_failure_note(
-    deps: AgentDeps, tool_name: str, call_signature: str
-) -> None:
-    """Drop standing failure memory for one exact call once it succeeds.
+def _clear_tool_failure_streak(deps: AgentDeps) -> None:
+    """Reset all standing failure memory once any tool call succeeds.
 
-    Without this, a call that failed once, succeeded on retry, and then
-    (much later, coincidentally) failed again with identical arguments would
-    be miscounted as an uninterrupted repeat and escalate immediately.
+    "Failed N times in a row" is only accurate if nothing else has succeeded
+    in between. Clearing only the note for the call that just succeeded
+    would leave an unrelated call's streak intact across an intervening
+    success, and a later coincidental repeat of that old failing call would
+    be misreported as an uninterrupted run of failures.
     """
 
-    if deps.tool_failure_notes is None:
-        return
-    key = f"{tool_name}:{call_signature}"
-    deps.tool_failure_notes[:] = [
-        note for note in deps.tool_failure_notes if note.get("key") != key
-    ]
+    if deps.tool_failure_notes is not None:
+        deps.tool_failure_notes.clear()
 
 
 def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[AgentDeps, str]:
@@ -216,7 +229,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"mode": mode},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "web_search", error, call_signature
+                ctx.deps, "web_search", type(error).__name__, call_signature
             ) from error
 
         safe_metadata: dict[str, Any] = {"mode": mode}
@@ -246,11 +259,16 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             # A result the tool itself reports as unsuccessful (e.g. the
             # search provider is unconfigured) is a real failure the model
             # must not silently accept and move on from -- route it through
-            # the same reflect-and-retry path as a raised exception.
+            # the same reflect-and-retry path as a raised exception. The
+            # "error" field here is always one of skill_tools.py's own
+            # short, hardcoded messages, never raw provider/exception text.
             raise _reflect_on_tool_failure(
-                ctx.deps, "web_search", RuntimeError("unsuccessful_result"), call_signature
+                ctx.deps,
+                "web_search",
+                str(result.get("error") or "unsuccessful_result"),
+                call_signature,
             )
-        _clear_tool_failure_note(ctx.deps, "web_search", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         if isinstance(result, dict):
             return {
                 **result,
@@ -291,7 +309,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"intent": intent, "scope": "WEB"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "academic_search", error, call_signature
+                ctx.deps, "academic_search", type(error).__name__, call_signature
             ) from error
 
         ok = result.get("ok", True)
@@ -308,13 +326,16 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 },
             )
         if _academic_search_should_reflect(result):
+            # result["error"] here is always one of the four bounded
+            # validation codes checked in _academic_search_should_reflect,
+            # never raw provider text.
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "academic_search",
-                RuntimeError("unsuccessful_result"),
+                str(result.get("error") or "unsuccessful_result"),
                 call_signature,
             )
-        _clear_tool_failure_note(ctx.deps, "academic_search", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         return {
             **result,
             "data_boundary": data_only_boundary("academic_external"),
@@ -365,7 +386,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"intent": intent, "scope": "WEB"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "github_search", error, call_signature
+                ctx.deps, "github_search", type(error).__name__, call_signature
             ) from error
 
         ok = result.get("ok", True)
@@ -382,13 +403,15 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 },
             )
         if not ok:
+            # result["error"] here is always one of github_search.py's own
+            # short machine-readable codes, never raw provider text.
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "github_search",
-                RuntimeError("unsuccessful_result"),
+                str(result.get("error") or "unsuccessful_result"),
                 call_signature,
             )
-        _clear_tool_failure_note(ctx.deps, "github_search", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         return {
             **result,
             "data_boundary": data_only_boundary("github_public_api"),
@@ -412,7 +435,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "MY_FILES"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "search_my_files", error, call_signature
+                ctx.deps, "search_my_files", type(error).__name__, call_signature
             ) from error
         ok = result.get("ok", True)
         if ctx.deps.tool_event_recorder is not None:
@@ -430,10 +453,10 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "search_my_files",
-                RuntimeError("unsuccessful_result"),
+                str(result.get("error") or "unsuccessful_result"),
                 call_signature,
             )
-        _clear_tool_failure_note(ctx.deps, "search_my_files", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         return {
             **result,
             "data_boundary": data_only_boundary("uploaded_files"),
@@ -474,13 +497,32 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     0,
                     {"policy": tool_metadata(policy.tool_name)},
                 )
-            # The idempotency key above already makes a retried
-            # create_pending_action call safe (same action_id on replay), so
-            # reflecting-and-retrying here cannot double-create the action.
+            # The idempotency key is derived from the free-form `reason`
+            # text, so it only protects a retry that resubmits that text
+            # unchanged -- the generic "retry with different arguments"
+            # advice would defeat that guarantee (a paraphrased reason is a
+            # different key, so a commit that actually succeeded server-side
+            # but looked like a failure to the client could be duplicated).
             raise _reflect_on_tool_failure(
-                ctx.deps, policy.tool_name, error, call_signature
+                ctx.deps,
+                policy.tool_name,
+                type(error).__name__,
+                call_signature,
+                guidance=(
+                    "decide why this likely failed, then retry this exact "
+                    "same action with the reason text UNCHANGED -- do not "
+                    "paraphrase it, since the system uses it to safely "
+                    "detect a duplicate if the previous attempt actually "
+                    "succeeded -- or use a different tool if this one "
+                    "cannot succeed"
+                ),
+                escalated_guidance=(
+                    "do not change the reason text -- if the identical "
+                    "action keeps failing, tell the user honestly that this "
+                    "action cannot be completed right now"
+                ),
             ) from error
-        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         action_id = str(pending_action["action_id"])
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -523,9 +565,12 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "PROJECT_RUNTIME_EVIDENCE"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_runtime_evidence", error, call_signature
+                ctx.deps,
+                "inspect_runtime_evidence",
+                type(error).__name__,
+                call_signature,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -572,11 +617,12 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "PROJECT_ARCHITECTURE_EVIDENCE"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_architecture_evidence", error, call_signature
+                ctx.deps,
+                "inspect_architecture_evidence",
+                type(error).__name__,
+                call_signature,
             ) from error
-        _clear_tool_failure_note(
-            ctx.deps, "inspect_architecture_evidence", call_signature
-        )
+        _clear_tool_failure_streak(ctx.deps)
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -633,7 +679,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     },
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_source_status", error, call_signature
+                ctx.deps, "inspect_source_status", type(error).__name__, call_signature
             ) from error
 
         policy = tool_metadata("inspect_source_status")
@@ -678,7 +724,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
-        _clear_tool_failure_note(ctx.deps, "inspect_source_status", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         return {
             **result,
             "policy": policy,
@@ -710,7 +756,10 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "AUTHORIZED_MY_FILES_SOURCE"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_source_of_truth", error, call_signature
+                ctx.deps,
+                "inspect_source_of_truth",
+                type(error).__name__,
+                call_signature,
             ) from error
 
         policy = tool_metadata("inspect_source_of_truth")
@@ -763,7 +812,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
-        _clear_tool_failure_note(ctx.deps, "inspect_source_of_truth", call_signature)
+        _clear_tool_failure_streak(ctx.deps)
         return {
             **result,
             "policy": policy,
