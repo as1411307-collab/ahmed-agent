@@ -269,8 +269,17 @@ def build_independent_review_document(
         # Bind to only the provenance records the answer actually cites, not
         # everything a search retrieved: a search can surface an official
         # source the model never quoted, and an unrelated citation must not
-        # inherit that unused record's identity.
-        observed_identities = cited_external_identities(trace)
+        # inherit that unused record's identity. The packet builder
+        # precomputes this on the raw trace (see semantic_evaluation.py) and
+        # carries it as "cited_external_identities", because a direct-URL
+        # citation is redacted to the literal "[URL]" in this packet's own
+        # "citations"/"sources" fields and could never rebind here. Fall back
+        # to recomputing only when that field is absent (e.g. a hand-built
+        # packet in a test).
+        if "cited_external_identities" in trace:
+            observed_identities = set(trace.get("cited_external_identities") or [])
+        else:
+            observed_identities = cited_external_identities(trace)
         bound_aa_rc_026_provenance = (
             case.get("case_id") == "AA-RC-026"
             and trace.get("evidence_preconditions", {}).get("status") == "READY"

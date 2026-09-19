@@ -22,8 +22,8 @@
   "overall_status": "FAIL",
   "counts": {
     "PASS": 0,
-    "FAIL": 5,
-    "REVIEW_REQUIRED": 21,
+    "FAIL": 4,
+    "REVIEW_REQUIRED": 22,
     "NOT_DETERMINED": 0
   },
   "results": [
@@ -1722,21 +1722,21 @@
         "status": "REVIEW_REQUIRED",
         "claim_level_decision": "INDEPENDENT_REVIEW_REQUIRED"
       },
-      "semantic_status": "FAIL",
+      "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
       "independent_review": {
         "reviewer_type": "independent_evaluator",
         "reviewer_id": "claude-sonnet-5 (anthropic)",
         "scores": {
-          "factual_correctness": 1,
+          "factual_correctness": 4,
           "groundedness": 2,
-          "completeness": 1,
-          "scope_adherence": 2,
-          "safe_abstention": 2
+          "completeness": 3,
+          "scope_adherence": 4,
+          "safe_abstention": 4
         },
-        "decision": "FAIL",
-        "reason": "The system's own upload_e2e record shows every supported file type failed embedding, which the complete answer never reports -- a confirmed gap against the case's explicit per-file-status requirement, and evidence of a real product defect.",
-        "evidence_notes": "trace.upload_e2e.supported_file_statuses shows all four uploaded files (txt/md/pdf/docx) with status='embedding_failed'; the answer text only discusses the two older, already-indexed files."
+        "decision": "REVIEW_REQUIRED",
+        "reason": "The prior FAIL scored the chat answer against upload_e2e data (all 4 test files failed embedding) that the model structurally could not see during the turn -- that data is captured by a separate harness upload/cleanup cycle that completes before the chat call is made. Re-scored on what the turn could actually know: the answer is accurate and appropriately scoped, but groundedness stays below PASS because the deterministic check is REVIEW_REQUIRED, not a confirmed match.",
+        "evidence_notes": "eval_exec.py calls _run_aa_rc_018_upload_e2e (which uploads then deletes the 4 test files) before _post_chat_message, and sets trace['upload_e2e'] only after the chat response returns -- confirmed by reading eval_exec.py and eval_http.py directly. The embedding_failed status on all 4 file types is a real, separate product defect worth reporting, but it is not evidence the chat answer's factual claims or completeness were wrong."
       }
     },
     {
@@ -2683,26 +2683,6 @@
         "code_bug_confirmed": false,
         "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
         "next_action": "address_independent_review_findings"
-      },
-      {
-        "case_id": "AA-RC-018",
-        "execution_classification": "EXECUTION_OK",
-        "dimensions": {
-          "factual_correctness": {
-            "status": "FAIL",
-            "score": 1,
-            "reason": "The independent reviewer scored this dimension as failing."
-          },
-          "completeness": {
-            "status": "FAIL",
-            "score": 1,
-            "reason": "The independent reviewer scored this dimension as failing."
-          }
-        },
-        "classification": "independent_review_failure",
-        "code_bug_confirmed": false,
-        "reason": "The system's own upload_e2e record shows every supported file type failed embedding, which the complete answer never reports -- a confirmed gap against the case's explicit per-file-status requirement, and evidence of a real product defect.",
-        "next_action": "address_independent_review_findings"
       }
     ],
     "semantic_failures": [
@@ -2785,30 +2765,10 @@
         "code_bug_confirmed": false,
         "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
         "next_action": "address_independent_review_findings"
-      },
-      {
-        "case_id": "AA-RC-018",
-        "execution_classification": "EXECUTION_OK",
-        "dimensions": {
-          "factual_correctness": {
-            "status": "FAIL",
-            "score": 1,
-            "reason": "The independent reviewer scored this dimension as failing."
-          },
-          "completeness": {
-            "status": "FAIL",
-            "score": 1,
-            "reason": "The independent reviewer scored this dimension as failing."
-          }
-        },
-        "classification": "independent_review_failure",
-        "code_bug_confirmed": false,
-        "reason": "The system's own upload_e2e record shows every supported file type failed embedding, which the complete answer never reports -- a confirmed gap against the case's explicit per-file-status requirement, and evidence of a real product defect.",
-        "next_action": "address_independent_review_findings"
       }
     ],
     "execution_failures": []
   },
-  "review_packet_sha256": "732136b07e47d683ed19011f4025012fbd5618c51701ce6658a3c349695adac4",
+  "review_packet_sha256": "db012486cf26d79bd48173a8a51c3db5d5d359421b83dea74805324b25fb8535",
   "review_applied": true
 }

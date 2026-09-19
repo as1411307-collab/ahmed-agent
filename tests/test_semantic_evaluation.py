@@ -371,6 +371,49 @@ class SemanticEvaluationTests(unittest.TestCase):
         self.assertNotIn(bare_jwt, redacted_jwt)
         self.assertIn("[REDACTED]", redacted_jwt)
 
+    def test_failure_analysis_merges_coexisting_deterministic_and_review_failures(
+        self,
+    ) -> None:
+        # A case can have BOTH a deterministic dimension FAIL and an
+        # independent reviewer's own failing score in a different dimension.
+        # The old two-list construction dropped the review's failing
+        # dimension/reason entirely whenever a deterministic FAIL already
+        # existed for that case; both must now appear in one merged entry.
+        evaluation = {
+            "case_id": "SYNTHETIC-COEXIST-001",
+            "execution_classification": "EXECUTION_OK",
+            "semantic_status": "FAIL",
+            "dimensions": {
+                "groundedness": {
+                    "status": "FAIL",
+                    "score": 0,
+                    "reason": "No citation or source in the trace.",
+                    "evidence": [],
+                },
+                "factual_correctness": {
+                    "status": "REVIEW_REQUIRED",
+                    "score": None,
+                    "reason": "Needs independent review.",
+                    "evidence": [],
+                },
+            },
+            "independent_review": {
+                "scores": {"completeness": 1},
+                "reason": "The answer omits a required success criterion.",
+            },
+        }
+        entries = semantic_evaluation.build_failure_analysis_entries([evaluation])
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertIn("groundedness", entry["dimensions"])
+        self.assertIn("completeness", entry["dimensions"])
+        self.assertEqual(entry["dimensions"]["completeness"]["score"], 1)
+        self.assertEqual(
+            entry["classification"],
+            "semantic_output_or_evidence_gap_and_independent_review_failure",
+        )
+        self.assertIn("required success criterion", entry["reason"])
+
     def test_packet_preserves_bounded_external_provenance_without_verifying_it(self) -> None:
         trace = {
             "case_id": "AA-RC-026",
@@ -400,6 +443,34 @@ class SemanticEvaluationTests(unittest.TestCase):
         self.assertEqual(
             packet_trace["external_evidence_provenance"][0]["verification_status"],
             "UNVERIFIED_EXTERNAL",
+        )
+
+    def test_packet_preserves_cited_identity_for_direct_url_citations(self) -> None:
+        # A direct-URL citation is redacted to the literal "[URL]" in the
+        # packet's own citations/sources fields (see the URL-redaction rule
+        # in _redact_text), so an independent reviewer could never rebind
+        # a cited identity from that field alone. The packet must carry the
+        # identity precomputed from the raw, pre-redaction trace instead.
+        trace = {
+            "case_id": "AA-RC-TEST-URL",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "citations": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "sources": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "external_evidence_provenance": [
+                {
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "source_identity": "external_openai_official",
+                    "verification_status": "UNVERIFIED_EXTERNAL",
+                }
+            ],
+            "output": {"answer": "Cited directly by URL."},
+        }
+        packet_trace = semantic_evaluation._packet_trace_for_independent_reviewer(trace)
+        self.assertEqual(packet_trace["citations"], ["[URL]"])
+        self.assertEqual(
+            packet_trace["cited_external_identities"], ["external_openai_official"]
         )
 
     def test_final_output_redacted_keeps_a_full_answer_for_the_reviewer(self) -> None:

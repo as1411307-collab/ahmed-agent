@@ -831,6 +831,13 @@ def _packet_trace_for_independent_reviewer(trace: dict[str, Any]) -> dict[str, A
         "external_evidence_provenance": _safe_external_provenance(
             trace.get("external_evidence_provenance")
         ),
+        # Computed on the raw, pre-redaction trace: a direct-URL citation is
+        # redacted to the literal string "[URL]" above (and provenance URLs
+        # are separately query-stripped), so neither survives as a key an
+        # independent reviewer could rebind by. Precomputing here is the only
+        # point that ever sees the real citation and the real provenance URL
+        # at the same time.
+        "cited_external_identities": sorted(cited_external_identities(trace)),
         "evidence_preconditions": trace.get("evidence_preconditions"),
         "upload_e2e": trace.get("upload_e2e"),
     }
@@ -1046,6 +1053,95 @@ def apply_reviews(
     return merged
 
 
+def build_failure_analysis_entries(
+    evaluations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One failure-analysis entry per case, merging deterministic and review failures.
+
+    apply_reviews() can drive semantic_status to FAIL purely from an
+    independent reviewer's scores (score <=1 on some dimension), whether or
+    not a deterministic dimension also failed on its own. A case can carry
+    both at once (e.g. a deterministic groundedness FAIL alongside a
+    reviewer-scored completeness FAIL); merging them into one entry per case
+    keeps the reviewer's failing dimension/reason visible instead of
+    silently dropping it behind the deterministic entry.
+    """
+
+    entries: list[dict[str, Any]] = []
+    for result in evaluations:
+        deterministic_fail_dims = {
+            dimension: value
+            for dimension, value in result["dimensions"].items()
+            if value["status"] == "FAIL"
+        }
+        review = result.get("independent_review") or {}
+        review_fail_dims = {
+            dimension: {
+                "status": "FAIL",
+                "score": score,
+                "reason": "The independent reviewer scored this dimension as failing.",
+            }
+            for dimension, score in (review.get("scores") or {}).items()
+            if isinstance(score, int) and score <= 1
+        }
+        has_deterministic_fail = bool(deterministic_fail_dims)
+        has_review_fail = (
+            result["semantic_status"] == "FAIL"
+            and result.get("independent_review") is not None
+        )
+        if not has_deterministic_fail and not has_review_fail:
+            continue
+        is_execution_failure = (
+            result.get("execution_classification", "EXECUTION_OK") != "EXECUTION_OK"
+        )
+        if has_deterministic_fail and has_review_fail:
+            classification = (
+                "execution_or_provider_failure"
+                if is_execution_failure
+                else "semantic_output_or_evidence_gap_and_independent_review_failure"
+            )
+            reason = (
+                "The failure combines a deterministic dimension failure with the "
+                "independent reviewer's own failing score(s): "
+                + (
+                    review.get("reason")
+                    or "the reviewer scored a dimension as failing."
+                )
+            )
+            next_action = "independent_review_or_reexecute_with_grounded_evidence"
+        elif has_deterministic_fail:
+            classification = (
+                "execution_or_provider_failure"
+                if is_execution_failure
+                else "semantic_output_or_evidence_gap"
+            )
+            reason = (
+                "The failure is derived from answer/evidence assertions in the "
+                "stored trace; no execution, persistence, provider, or policy "
+                "boundary error is present in this result."
+            )
+            next_action = "independent_review_or_reexecute_with_grounded_evidence"
+        else:
+            classification = "independent_review_failure"
+            reason = review.get("reason") or "The independent reviewer scored this case as FAIL."
+            next_action = "address_independent_review_findings"
+        entries.append(
+            {
+                "case_id": result["case_id"],
+                "execution_classification": result.get(
+                    "execution_classification",
+                    "EXECUTION_OK",
+                ),
+                "dimensions": {**deterministic_fail_dims, **review_fail_dims},
+                "classification": classification,
+                "code_bug_confirmed": False,
+                "reason": reason,
+                "next_action": next_action,
+            }
+        )
+    return entries
+
+
 def evaluate_baseline(
     *,
     contract: dict[str, Any],
@@ -1107,76 +1203,7 @@ def evaluate_baseline(
         status: sum(item["semantic_status"] == status for item in evaluations)
         for status in ("PASS", "FAIL", "REVIEW_REQUIRED", "NOT_DETERMINED")
     }
-    deterministic_failures = [
-        {
-            "case_id": result["case_id"],
-            "execution_classification": result.get(
-                "execution_classification",
-                "EXECUTION_OK",
-            ),
-            "dimensions": {
-                dimension: value
-                for dimension, value in result["dimensions"].items()
-                if value["status"] == "FAIL"
-            },
-            "classification": (
-                "execution_or_provider_failure"
-                if result.get("execution_classification") != "EXECUTION_OK"
-                else "semantic_output_or_evidence_gap"
-            ),
-            "code_bug_confirmed": False,
-            "reason": (
-                "The failure is derived from answer/evidence assertions in the "
-                "stored trace; no execution, persistence, provider, or policy "
-                "boundary error is present in this result."
-            ),
-            "next_action": "independent_review_or_reexecute_with_grounded_evidence",
-        }
-        for result in evaluations
-        if any(
-            value["status"] == "FAIL"
-            for value in result["dimensions"].values()
-        )
-    ]
-    # apply_reviews() can also drive semantic_status to FAIL on its own
-    # (an independent reviewer scoring a dimension <=1) without touching
-    # any deterministic dimension status above -- without this, a review
-    # that adds new failures leaves this analysis section empty while
-    # overall_status/counts already report them.
-    review_driven_failures = [
-        {
-            "case_id": result["case_id"],
-            "execution_classification": result.get(
-                "execution_classification",
-                "EXECUTION_OK",
-            ),
-            "dimensions": {
-                dimension: {
-                    "status": "FAIL",
-                    "score": score,
-                    "reason": "The independent reviewer scored this dimension as failing.",
-                }
-                for dimension, score in (
-                    (result.get("independent_review") or {}).get("scores") or {}
-                ).items()
-                if isinstance(score, int) and score <= 1
-            },
-            "classification": "independent_review_failure",
-            "code_bug_confirmed": False,
-            "reason": (
-                (result.get("independent_review") or {}).get("reason")
-                or "The independent reviewer scored this case as FAIL."
-            ),
-            "next_action": "address_independent_review_findings",
-        }
-        for result in evaluations
-        if result["semantic_status"] == "FAIL"
-        and result.get("independent_review") is not None
-        and not any(
-            value["status"] == "FAIL" for value in result["dimensions"].values()
-        )
-    ]
-    deterministic_failures = deterministic_failures + review_driven_failures
+    deterministic_failures = build_failure_analysis_entries(evaluations)
     execution_failures = [
         {
             "case_id": result["case_id"],

@@ -253,6 +253,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -704,6 +705,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -954,6 +956,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -1204,6 +1207,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -1454,6 +1458,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -1704,6 +1709,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -2159,6 +2165,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -2409,6 +2416,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -2853,6 +2861,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -3014,6 +3023,9 @@
             "source_identity": "external_web_search",
             "verification_status": "UNVERIFIED_EXTERNAL"
           }
+        ],
+        "cited_external_identities": [
+          "external_web_search"
         ],
         "evidence_preconditions": null,
         "upload_e2e": null
@@ -3276,6 +3288,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -3523,6 +3536,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -3966,6 +3980,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -4411,6 +4426,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -4906,6 +4922,7 @@
             "verification_status": "UNVERIFIED_EXTERNAL"
           }
         ],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -5155,6 +5172,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -5411,6 +5429,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -5865,6 +5884,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": {
           "status": "FAIL",
@@ -6189,6 +6209,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -6435,6 +6456,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -6688,6 +6710,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -7133,6 +7156,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -7380,6 +7404,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -7627,6 +7652,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -8076,6 +8102,7 @@
           }
         ],
         "external_evidence_provenance": [],
+        "cited_external_identities": [],
         "evidence_preconditions": null,
         "upload_e2e": null
       },
@@ -8572,6 +8599,7 @@
             "verification_status": "UNVERIFIED_EXTERNAL"
           }
         ],
+        "cited_external_identities": [],
         "evidence_preconditions": {
           "status": "READY",
           "missing": [],
@@ -8606,5 +8634,5 @@
       }
     }
   ],
-  "packet_sha256": "732136b07e47d683ed19011f4025012fbd5618c51701ce6658a3c349695adac4"
+  "packet_sha256": "db012486cf26d79bd48173a8a51c3db5d5d359421b83dea74805324b25fb8535"
 }
