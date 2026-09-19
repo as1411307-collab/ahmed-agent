@@ -80,6 +80,34 @@ from source_of_truth import (
 from source_status import inspect_source_status as inspect_existing_source_status
 
 
+# academic_search's ok:False is not always a failure worth retrying: its DOI
+# path (intent="doi", or intent="citations" over a DOI) reports {"ok": False}
+# for terminal domain outcomes too -- an invalid DOI ("error": "invalid_doi")
+# or a valid DOI with no registered metadata ("metadata_status": "NOT_FOUND",
+# still carrying a usable "landing_url"). Those are answers to return to the
+# model, not infrastructure failures to retry; only these top-level argument-
+# validation codes (checked before any DOI resolution happens) mean the model
+# should retry with different arguments.
+_ACADEMIC_SEARCH_RETRYABLE_ERRORS = frozenset(
+    {"query_required", "query_too_long", "invalid_intent", "invalid_max_results"}
+)
+
+
+def _academic_search_should_reflect(result: dict[str, object]) -> bool:
+    """Is this academic_search result an infrastructure failure worth retrying?
+
+    False for a terminal domain outcome (an invalid DOI, or a valid DOI with
+    no registered metadata) even though the tool itself marks it ok=False --
+    those already carry the model's answer (an error to report, or a landing
+    URL to offer) and must be returned normally, not discarded for a retry
+    prompt that would make the model wrongly claim the capability is down.
+    """
+
+    if result.get("ok", True):
+        return False
+    return result.get("error") in _ACADEMIC_SEARCH_RETRYABLE_ERRORS
+
+
 def _tool_call_signature(**kwargs: object) -> str:
     """A stable signature identifying one tool call's arguments.
 
@@ -279,7 +307,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "providers_used": result.get("providers_used", []),
                 },
             )
-        if not ok:
+        if _academic_search_should_reflect(result):
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "academic_search",

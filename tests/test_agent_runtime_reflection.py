@@ -6,6 +6,7 @@ from pydantic_ai import ModelRetry
 
 from agent_consts import AgentDeps
 from agent_runtime import (
+    _academic_search_should_reflect,
     _clear_tool_failure_note,
     _reflect_on_tool_failure,
     _tool_call_signature,
@@ -112,6 +113,50 @@ class ReflectOnToolFailureTests(unittest.TestCase):
         self.assertIsInstance(retry, ModelRetry)
         self.assertNotIn("in a row", retry.message)
         _clear_tool_failure_note(deps, "web_search", sig)  # must not crash either
+
+
+class AcademicSearchShouldReflectTests(unittest.TestCase):
+    def test_ok_result_never_reflects(self) -> None:
+        self.assertFalse(_academic_search_should_reflect({"ok": True, "results": []}))
+
+    def test_argument_validation_errors_are_retryable(self) -> None:
+        for code in (
+            "query_required",
+            "query_too_long",
+            "invalid_intent",
+            "invalid_max_results",
+        ):
+            with self.subTest(code=code):
+                self.assertTrue(
+                    _academic_search_should_reflect(
+                        {"ok": False, "error": code, "results": []}
+                    )
+                )
+
+    def test_invalid_doi_is_a_terminal_answer_not_a_retryable_failure(self) -> None:
+        # Real shape from academic_search.py's DOIResolver.resolve().
+        result = {
+            "ok": False,
+            "intent": "doi",
+            "error": "invalid_doi",
+            "original_doi": "not-a-doi",
+            "results": [],
+        }
+        self.assertFalse(_academic_search_should_reflect(result))
+
+    def test_doi_not_found_with_a_landing_url_is_terminal_not_retryable(self) -> None:
+        # Real shape: a valid, registered DOI with no metadata record --
+        # discarding this for a retry prompt would lose the landing_url and
+        # make the model wrongly claim the capability is broken.
+        result = {
+            "ok": False,
+            "intent": "doi",
+            "registration_agency": "crossref",
+            "landing_url": "https://doi.org/10.1234/example",
+            "metadata_status": "NOT_FOUND",
+            "results": [],
+        }
+        self.assertFalse(_academic_search_should_reflect(result))
 
 
 class ToolCallSignatureTests(unittest.TestCase):
