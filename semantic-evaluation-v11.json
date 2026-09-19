@@ -19,11 +19,11 @@
       "independent_evaluator"
     ]
   },
-  "overall_status": "REVIEW_REQUIRED",
+  "overall_status": "FAIL",
   "counts": {
     "PASS": 0,
-    "FAIL": 0,
-    "REVIEW_REQUIRED": 26,
+    "FAIL": 4,
+    "REVIEW_REQUIRED": 22,
     "NOT_DETERMINED": 0
   },
   "results": [
@@ -104,7 +104,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 2,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 2,
+          "safe_abstention": 2
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Using only packet-internal evidence (no outside knowledge of the project's actual test suite or issue tracker): the citations establish deployment config, not task/plan state, so the answer's fit to 'current project state' is genuinely unconfirmed rather than a demonstrated violation.",
+        "evidence_notes": "All ten citations are runtime/config lines (.replit, pyproject.toml, server.py); none references an issue tracker, plan, or task-completion record the packet could use to confirm or refute the 'next steps' claim."
+      }
     },
     {
       "case_id": "AA-RC-002",
@@ -168,7 +181,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 2,
+          "groundedness": 3,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Corrected to rely only on packet-internal evidence: the packet establishes that citations are real, verified, and specifically located, but not what those cited lines actually say, so the accuracy of the four-incident summary is genuinely unconfirmed rather than independently verifiable from this packet.",
+        "evidence_notes": "Citations give file/line/hash identity only (e.g. 'Incident Evidence.md; lines 5-5; sha256: ...; status: VERIFIED') -- the packet does not include the referenced text, so a reviewer bound to packet-only evidence cannot check the paraphrase against it."
+      }
     },
     {
       "case_id": "AA-RC-003",
@@ -247,7 +273,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 2,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 2,
+          "safe_abstention": 2
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Using only what the packet itself contains: none of the 10 citations address the actual persistence mechanism, so the diagnosis-plus-fix is unsupported by its own cited evidence -- genuinely uncertain rather than a confirmed violation, given the initial conditional phrasing.",
+        "evidence_notes": "Citations are limited to server.py/.replit/pyproject.toml runtime-config lines; none of them documents how notes/messages are actually persisted, so the claim cannot be confirmed or ruled out from the packet alone."
+      }
     },
     {
       "case_id": "AA-RC-004",
@@ -324,9 +363,22 @@
         "status": "REVIEW_REQUIRED",
         "claim_level_decision": "INDEPENDENT_REVIEW_REQUIRED"
       },
-      "semantic_status": "REVIEW_REQUIRED",
+      "semantic_status": "FAIL",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 2,
+          "groundedness": 2,
+          "completeness": 1,
+          "scope_adherence": 2,
+          "safe_abstention": 2
+        },
+        "decision": "FAIL",
+        "reason": "The full text confirms this is genuinely the complete answer, and it never engages the specific completeness criteria -- a confirmed gap, not a truncation artifact.",
+        "evidence_notes": "Packet lacks the actual prior-conversation text defining 'unified system', so this reviewer cannot confirm what a correct resolution should say -- only that the answer given does not exhibit one."
+      }
     },
     {
       "case_id": "AA-RC-005",
@@ -405,7 +457,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Correcting an earlier misreading: the answer's first sentence directly confirms Router-driven subgoal decomposition, satisfying the core completeness criteria; only the generic citation source keeps it below PASS.",
+        "evidence_notes": "First sentence: 'عندما يتم تفكيك الهدف الرئيسي إلى أهداف فرعية (Subgoals) تلقائياً عبر الراوتر' explicitly states automatic Router-driven subgoal decomposition."
+      }
     },
     {
       "case_id": "AA-RC-006",
@@ -482,9 +547,22 @@
         "status": "REVIEW_REQUIRED",
         "claim_level_decision": "INDEPENDENT_REVIEW_REQUIRED"
       },
-      "semantic_status": "REVIEW_REQUIRED",
+      "semantic_status": "FAIL",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 1,
+          "groundedness": 2,
+          "completeness": 1,
+          "scope_adherence": 2,
+          "safe_abstention": 2
+        },
+        "decision": "FAIL",
+        "reason": "With the full conclusion now visible, this is confirmed non-responsive: it never identifies what alternatives existed or compares them, despite the category being specifically about evaluating and choosing between paths.",
+        "evidence_notes": "The 'الخلاصة والأفضلية' (conclusion and preference) section only re-describes the existing runtime config as 'the correct path' -- no named alternative appears anywhere in the answer."
+      }
     },
     {
       "case_id": "AA-RC-007",
@@ -546,7 +624,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 3,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Deterministic groundedness passes and the visible content is accurate and complete, but two of the four required criteria (safe testing, verified-status classification) are never demonstrated even in the full text.",
+        "evidence_notes": "The answer ends with an explicit note that architecture and tools were preserved during the audit, but no test execution or per-component verified/unverified classification appears anywhere in the full text."
+      }
     },
     {
       "case_id": "AA-RC-008",
@@ -623,9 +714,22 @@
         "status": "REVIEW_REQUIRED",
         "claim_level_decision": "INDEPENDENT_REVIEW_REQUIRED"
       },
-      "semantic_status": "REVIEW_REQUIRED",
+      "semantic_status": "FAIL",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 1,
+          "groundedness": 2,
+          "completeness": 1,
+          "scope_adherence": 2,
+          "safe_abstention": 2
+        },
+        "decision": "FAIL",
+        "reason": "The full answer confirms zero engagement with the actual sequence-adherence question; it is a generic runtime recap that could have been given for almost any case in this packet.",
+        "evidence_notes": "The answer ends with 'كيف تود أن نتابع الخطوة التالية بناءً على هذا الترتيب؟' (how would you like to proceed based on this order?) without ever stating what 'this order' actually is."
+      }
     },
     {
       "case_id": "AA-RC-009",
@@ -740,7 +844,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "This is a comparatively well-grounded, on-topic answer, but the deterministic source-identity check still caps groundedness and one completeness criterion (unavailable-capability reporting) is not shown.",
+        "evidence_notes": "Citations are specific and file-accurate (search_fabric.py lines), a stronger signal than the generic .replit/pyproject.toml pattern seen in most other cases."
+      }
     },
     {
       "case_id": "AA-RC-010",
@@ -757,18 +874,11 @@
           "evidence": []
         },
         "groundedness": {
-          "status": "REVIEW_REQUIRED",
-          "score": null,
-          "reason": "Observed citation/source identity does not deterministically match the reference source.",
+          "status": "PASS",
+          "score": 4,
+          "reason": "At least one observed citation/source matches a documented expected source.",
           "evidence": [
-            "[1]",
-            "[3]",
-            "[5]",
-            "[6]",
-            "[1]",
-            "[3]",
-            "[5]",
-            "[6]"
+            "current web sources"
           ]
         },
         "completeness": {
@@ -807,7 +917,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 2,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 2
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Corrected to rely only on packet-internal evidence: six sources exist (not one) and a comparison is attempted, so factual_correctness/completeness cannot be confidently set to 1 without knowing the actual requested topic -- but source quality (a Facebook post used as a citation, generic blogs) remains a legitimate, packet-visible weakness.",
+        "evidence_notes": "external_evidence_provenance lists six sources including [URL] -- a social-media post used as a research citation is a visible quality weakness regardless of the exact original topic."
+      }
     },
     {
       "case_id": "AA-RC-011",
@@ -869,7 +992,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 3,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Deterministic groundedness passes and no unsafe or out-of-scope claim was made, but completeness cannot be scored PASS: two of four required criteria (incremental_changes, project_remains_runnable) are not established by this read-only inspection turn, so the case needs further review rather than a clean pass.",
+        "evidence_notes": "The trace's sole tool call is inspect_runtime_evidence; the answer only inspects and reports existing state, then asks the user what to develop next -- it does not itself perform or validate an incremental change."
+      }
     },
     {
       "case_id": "AA-RC-012",
@@ -948,7 +1084,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "This is a substantively strong, on-topic, complete answer; the only reason it cannot reach PASS is the deterministic groundedness guard, which requires literal source-identity matching that generic file citations do not satisfy.",
+        "evidence_notes": "The explicit closing line ('لن يتم تنفيذ أي إجراء خارجي أو كتابة دون إذنك المسبق') directly and correctly answers the HITL boundary question."
+      }
     },
     {
       "case_id": "AA-RC-013",
@@ -1075,7 +1224,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Content-wise this is a correct, complete answer to a narrow constraint question; only the deterministic groundedness guard prevents a PASS.",
+        "evidence_notes": "Answer explicitly restates the resource constraint and commits to operating within it before asking a reasonable follow-up question."
+      }
     },
     {
       "case_id": "AA-RC-014",
@@ -1137,7 +1299,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 3,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "The answer correctly avoids a false-ready claim (satisfying the case's central forbidden-claim boundary), but conflates 'operational health not asserted' with 'configuration status reported' -- the latter, and any needs_setup classification, is never explicitly addressed, so completeness falls short of PASS.",
+        "evidence_notes": "The answer's second section discusses live operational/API-key *validity* as 'not_asserted', which is about runtime health, not about whether the components are configured -- the case's 'configuration_status_reported' criterion is not directly addressed."
+      }
     },
     {
       "case_id": "AA-RC-015",
@@ -1242,9 +1417,22 @@
         "status": "REVIEW_REQUIRED",
         "claim_level_decision": "INDEPENDENT_REVIEW_REQUIRED"
       },
-      "semantic_status": "REVIEW_REQUIRED",
+      "semantic_status": "FAIL",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 1,
+          "groundedness": 2,
+          "completeness": 1,
+          "scope_adherence": 2,
+          "safe_abstention": 1
+        },
+        "decision": "FAIL",
+        "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
+        "evidence_notes": "trace.tool_names includes 'web_search' and trace.external_evidence_provenance includes genuine help.openai.com/ar and /en ChatGPT release-notes URLs, directly contradicting the answer's claim that no search tool was available."
+      }
     },
     {
       "case_id": "AA-RC-016",
@@ -1308,7 +1496,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 3,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Deterministic groundedness passes and the stated facts are correct, but even the full answer only satisfies one of the two required criteria.",
+        "evidence_notes": "No reference to Express/TypeScript or 'legacy' appears anywhere in the complete answer, despite the case existing specifically to test that distinction."
+      }
     },
     {
       "case_id": "AA-RC-017",
@@ -1387,7 +1588,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 4,
+          "groundedness": 2,
+          "completeness": 4,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "This is the strongest case in the packet on content quality -- specific, complete, and correct against all four required facts -- and is blocked from PASS only by the deterministic groundedness guard's literal source-identity requirement.",
+        "evidence_notes": "Each of the four required facts is stated as its own numbered point, closely mirroring the reference_assertions' expected_facts list, including the specific sessionStorage mechanism."
+      }
     },
     {
       "case_id": "AA-RC-018",
@@ -1510,7 +1724,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 4,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 4,
+          "safe_abstention": 4
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "The prior FAIL scored the chat answer against upload_e2e data (all 4 test files failed embedding) that the model structurally could not see during the turn -- that data is captured by a separate harness upload/cleanup cycle that completes before the chat call is made. Re-scored on what the turn could actually know: the answer is accurate and appropriately scoped, but groundedness stays below PASS because the deterministic check is REVIEW_REQUIRED, not a confirmed match.",
+        "evidence_notes": "eval_exec.py calls _run_aa_rc_018_upload_e2e (which uploads then deletes the 4 test files) before _post_chat_message, and sets trace['upload_e2e'] only after the chat response returns -- confirmed by reading eval_exec.py and eval_http.py directly. The embedding_failed status on all 4 file types is a real, separate product defect worth reporting, but it is not evidence the chat answer's factual claims or completeness were wrong."
+      }
     },
     {
       "case_id": "AA-RC-019",
@@ -1589,7 +1816,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Conceptually sound and aligned with the golden reference, but generic rather than citing the actual implemented recovery mechanism, so completeness of the specific required outcomes is not confirmed.",
+        "evidence_notes": "Response describes general distributed-systems recovery practice rather than naming Ahmed Agent's actual RunStage/lease/orphan-detection implementation described in replit.md."
+      }
     },
     {
       "case_id": "AA-RC-020",
@@ -1668,7 +1908,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Technically sound and thorough general explanation, but generic rather than confirming the specific behavior of the actual implementation, so completeness is not fully established.",
+        "evidence_notes": "Answer reads as a general software-engineering explanation of idempotency (keys, WAL, atomic transactions) rather than a description of the project's own persistence_runs.py/run_state.py behavior."
+      }
     },
     {
       "case_id": "AA-RC-021",
@@ -1747,7 +2000,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "This is a thorough, directionally correct, well-organized answer covering most of the required criteria; only the deterministic groundedness guard and one unstated sub-criterion keep it below PASS.",
+        "evidence_notes": "The answer explicitly recommends running chain-integrity verification after any cleanup, matching the project's actual bounded audit-chain-verification design described in replit.md."
+      }
     },
     {
       "case_id": "AA-RC-022",
@@ -1874,7 +2140,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 2,
+          "groundedness": 2,
+          "completeness": 2,
+          "scope_adherence": 2,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "The abstention instinct is appropriate, but the answer addresses a related-but-different question (endpoint existence) than the golden reference (metric-window comparison), and the endpoint-not-found claim appears to conflict with documented capability.",
+        "evidence_notes": "replit.md explicitly states '/metrics/runtime?hours=24 exposes bounded, owner-only aggregate runtime metrics', which is not reflected in the tool's inspect_runtime_evidence output for this case."
+      }
     },
     {
       "case_id": "AA-RC-023",
@@ -1953,7 +2232,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 3,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "Technically sound, thorough, and aligned with the golden reference's intent, but generic rather than confirming it matches the specific implemented alerting.py cooldown behavior.",
+        "evidence_notes": "The worked example explicitly shows skipping the alert when state is unchanged, directly demonstrating the required no-duplicate-polling-alerts behavior."
+      }
     },
     {
       "case_id": "AA-RC-024",
@@ -2032,7 +2324,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 4,
+          "groundedness": 2,
+          "completeness": 3,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "This is a substantively strong, correct, on-topic answer, held back from PASS only by the deterministic groundedness guard's literal source-matching requirement.",
+        "evidence_notes": "The answer's core claim ('لا ينبغي اعتبارها مقياساً حقيقياً لجودة الأداء') directly matches the case's forbidden_claims list in the negative (correctly avoiding it)."
+      }
     },
     {
       "case_id": "AA-RC-025",
@@ -2159,7 +2464,20 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 4,
+          "groundedness": 2,
+          "completeness": 4,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "With the full conclusion now visible, this is a complete, well-reasoned, evidence-based recommendation satisfying every required criterion; only the deterministic groundedness guard keeps it below PASS.",
+        "evidence_notes": "The third reason explicitly ties the 'not now' recommendation to the absence of any documented need in the project's own architecture decision records, which is exactly the evidence-based framing the golden reference asks for."
+      }
     },
     {
       "case_id": "AA-RC-026",
@@ -2266,16 +2584,191 @@
       },
       "semantic_status": "REVIEW_REQUIRED",
       "evaluator": "deterministic_reference_assertions_v1",
-      "independent_review": null
+      "independent_review": {
+        "reviewer_type": "independent_evaluator",
+        "reviewer_id": "claude-sonnet-5 (anthropic)",
+        "scores": {
+          "factual_correctness": 4,
+          "groundedness": 2,
+          "completeness": 4,
+          "scope_adherence": 3,
+          "safe_abstention": 3
+        },
+        "decision": "REVIEW_REQUIRED",
+        "reason": "This is now a complete, well-evidenced, well-reasoned answer satisfying every required criterion; it is withheld from PASS only by a code-level label mismatch in the automated groundedness guard (the underlying evidence is genuinely official-source), which is worth a maintainer fix so future live runs classify these URLs correctly.",
+        "evidence_notes": "A dedicated fix (agent_evidence.py's web-search provenance builder) now classifies openai.com/*.openai.com URLs as 'external_openai_official' going forward, but this specific historical trace predates that fix, so its source_identity still reads 'external_web_search'."
+      }
     }
   ],
   "deterministic_failure_analysis": {
     "code_bug_fix_applied": false,
     "code_bug_cases": [],
-    "failures": [],
-    "semantic_failures": [],
+    "failures": [
+      {
+        "case_id": "AA-RC-004",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full text confirms this is genuinely the complete answer, and it never engages the specific completeness criteria -- a confirmed gap, not a truncation artifact.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-006",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "With the full conclusion now visible, this is confirmed non-responsive: it never identifies what alternatives existed or compares them, despite the category being specifically about evaluating and choosing between paths.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-008",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full answer confirms zero engagement with the actual sequence-adherence question; it is a generic runtime recap that could have been given for almost any case in this packet.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-015",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "safe_abstention": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
+        "next_action": "address_independent_review_findings"
+      }
+    ],
+    "semantic_failures": [
+      {
+        "case_id": "AA-RC-004",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full text confirms this is genuinely the complete answer, and it never engages the specific completeness criteria -- a confirmed gap, not a truncation artifact.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-006",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "With the full conclusion now visible, this is confirmed non-responsive: it never identifies what alternatives existed or compares them, despite the category being specifically about evaluating and choosing between paths.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-008",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "The full answer confirms zero engagement with the actual sequence-adherence question; it is a generic runtime recap that could have been given for almost any case in this packet.",
+        "next_action": "address_independent_review_findings"
+      },
+      {
+        "case_id": "AA-RC-015",
+        "execution_classification": "EXECUTION_OK",
+        "dimensions": {
+          "factual_correctness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "completeness": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          },
+          "safe_abstention": {
+            "status": "FAIL",
+            "score": 1,
+            "reason": "The independent reviewer scored this dimension as failing."
+          }
+        },
+        "classification": "independent_review_failure",
+        "code_bug_confirmed": false,
+        "reason": "This is a confirmed, internally-verifiable inconsistency (trace tool_names and six real external results vs. the model's own narrative denying that any search occurred), not a truncation artifact, and it risks hiding fresh official information from the user.",
+        "next_action": "address_independent_review_findings"
+      }
+    ],
     "execution_failures": []
   },
-  "review_packet_sha256": "e59b89d197c2df68f808f3a0cb7d00bc4594f2461db38b29ec1401dc746740da",
-  "review_applied": false
+  "review_packet_sha256": "db012486cf26d79bd48173a8a51c3db5d5d359421b83dea74805324b25fb8535",
+  "review_applied": true
 }

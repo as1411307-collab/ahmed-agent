@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from config import AHMED_OPENAI_MODEL
+from semantic_evaluation import cited_external_identities, expected_source_matches_identities
 
 
 REVIEW_RUBRIC_VERSION = "semantic-review-rubric-v1"
@@ -265,6 +266,20 @@ def build_independent_review_document(
                 *[str(value) for value in trace.get("sources", [])],
             ]
         ).casefold()
+        # Bind to only the provenance records the answer actually cites, not
+        # everything a search retrieved: a search can surface an official
+        # source the model never quoted, and an unrelated citation must not
+        # inherit that unused record's identity. The packet builder
+        # precomputes this on the raw trace (see semantic_evaluation.py) and
+        # carries it as "cited_external_identities", because a direct-URL
+        # citation is redacted to the literal "[URL]" in this packet's own
+        # "citations"/"sources" fields and could never rebind here. Fall back
+        # to recomputing only when that field is absent (e.g. a hand-built
+        # packet in a test).
+        if "cited_external_identities" in trace:
+            observed_identities = set(trace.get("cited_external_identities") or [])
+        else:
+            observed_identities = cited_external_identities(trace)
         bound_aa_rc_026_provenance = (
             case.get("case_id") == "AA-RC-026"
             and trace.get("evidence_preconditions", {}).get("status") == "READY"
@@ -279,13 +294,17 @@ def build_independent_review_document(
                 and item.get("verification_status") == "UNVERIFIED_EXTERNAL"
                 for item in trace.get("external_evidence_provenance", [])
             )
-            and bool(trace.get("citations") or trace.get("sources"))
+            and "external_openai_official" in observed_identities
         )
         if bound_aa_rc_026_provenance:
             deterministic_groundedness = "PASS"
         elif not trace.get("citations") and not trace.get("sources"):
             deterministic_groundedness = "FAIL"
-        elif any(source.casefold() in observed for source in expected_sources):
+        elif any(
+            source.casefold() in observed
+            or expected_source_matches_identities(source, observed_identities)
+            for source in expected_sources
+        ):
             deterministic_groundedness = "PASS"
         else:
             deterministic_groundedness = "REVIEW_REQUIRED"

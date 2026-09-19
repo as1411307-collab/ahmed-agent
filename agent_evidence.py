@@ -251,6 +251,14 @@ def _safe_external_provenance_url(value: str) -> str | None:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
+def _external_source_identity(url: str) -> str:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if host == "openai.com" or host.endswith(".openai.com") or host == "openai.github.io":
+        return "external_openai_official"
+    return "external_web_search"
+
+
 async def prepare_evidence_first_context(
     user_message: str,
     *,
@@ -467,7 +475,7 @@ async def prepare_evidence_first_context(
                     "url": safe_url,
                     "title": str(item.get("title") or "")[:300],
                     "snippet": str(item.get("snippet") or "")[:1200],
-                    "source_identity": "external_web_search",
+                    "source_identity": _external_source_identity(safe_url),
                     "verification_status": "UNVERIFIED_EXTERNAL",
                 }
                 for item in safe_results

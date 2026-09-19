@@ -236,12 +236,183 @@ class SemanticEvaluationTests(unittest.TestCase):
             report["deterministic_failure_analysis"]["failures"],
         )
 
+    def test_review_driven_failure_appears_in_failure_analysis(self) -> None:
+        # apply_reviews() can push semantic_status to FAIL purely from an
+        # independent reviewer's scores, with no deterministic dimension
+        # ever reaching FAIL on its own. The failure-analysis section is
+        # built from deterministic dimension statuses only, so without this
+        # case it silently drops every review-driven failure even though
+        # counts/overall_status already report it.
+        expected = self.packet["cases"][0]
+        # evaluate_baseline() injects _artifact_file_sha256 before rebuilding
+        # the packet internally, so its packet_sha256 differs from
+        # self.packet's (built in setUpClass without that injection). Read
+        # the real one back from an unreviewed run instead of assuming it
+        # matches self.packet.
+        baseline_packet_sha256 = evaluate_baseline(
+            contract=self.contract,
+            baseline_path=BASELINE_PATH,
+        )["review_packet_sha256"]
+        review_document = {
+            "packet_sha256": baseline_packet_sha256,
+            "reviewer_type": "independent_evaluator",
+            "reviewer_id": "claude-sonnet-5 (anthropic)",
+            "independence_declaration": True,
+            "runtime_model_self_grading": False,
+            "reviews": [
+                {
+                    "case_id": expected["case_id"],
+                    "reference_fingerprint": expected["reference_fingerprint"],
+                    "execution_trace_fingerprint": expected[
+                        "execution_trace_fingerprint"
+                    ],
+                    "scores": {
+                        **{dimension: 2 for dimension in DIMENSIONS},
+                        "factual_correctness": 1,
+                    },
+                    "decision": "FAIL",
+                    "reason": "The answer never engages the question the case is about.",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            review_path = Path(directory) / "review.json"
+            review_path.write_text(
+                json.dumps(review_document, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            report = evaluate_baseline(
+                contract=self.contract,
+                baseline_path=BASELINE_PATH,
+                review_path=review_path,
+            )
+        result = next(
+            item for item in report["results"] if item["case_id"] == expected["case_id"]
+        )
+        self.assertEqual(result["semantic_status"], "FAIL")
+        analysis_case_ids = {
+            item["case_id"]
+            for item in report["deterministic_failure_analysis"]["failures"]
+        }
+        self.assertIn(expected["case_id"], analysis_case_ids)
+        entry = next(
+            item
+            for item in report["deterministic_failure_analysis"]["failures"]
+            if item["case_id"] == expected["case_id"]
+        )
+        self.assertEqual(entry["classification"], "independent_review_failure")
+        self.assertEqual(
+            report["deterministic_failure_analysis"]["semantic_failures"],
+            report["deterministic_failure_analysis"]["failures"],
+        )
+
     def test_packet_redacts_sensitive_answer_material(self) -> None:
         serialized = json.dumps(self.packet, ensure_ascii=False)
         self.assertNotIn("owner-secret", serialized)
         self.assertNotIn("AHMED_OWNER_TOKEN", serialized)
         for case in self.packet["cases"]:
             self.assertTrue(case["observations"]["sensitive_content_redacted"])
+
+    def test_redacts_bare_unlabeled_api_keys(self) -> None:
+        # A credential with no "api_key:"/"token:" label (e.g. leaked inline
+        # in a code snippet the model quoted back) must still be caught by
+        # its own shape -- otherwise raising final_output_redacted's length
+        # limit risks shipping a live secret to an independent reviewer.
+        # Fixtures are built by concatenating a vendor prefix with a filler
+        # body at runtime, rather than as one literal, so this test file
+        # never contains a contiguous credential-shaped string on disk.
+        # Mixed-case+digit filler is a valid body for every pattern below
+        # except AKIA (digits/uppercase only, checked separately).
+        mixed_filler = "aB3dE6fG9hI2jK5lM8nO1pQ4rS7tU0vW"
+        upper_filler = "AB3DE6FG9HI2JK5LM8NO1PQ4RS7TU0VW"
+        vendor_prefixes = [
+            "sk-" + "proj-",
+            "sk-" + "ant-api03-",
+            "gh" + "p_",
+            "github_pat_" + "11",
+            "AIza" + "SyD-",
+            "xoxb" + "-",
+        ]
+        for prefix in vendor_prefixes:
+            sample = f"here is the key: {prefix}{mixed_filler}"
+            redacted = semantic_evaluation._redact_text(sample)
+            self.assertIn("[REDACTED]", redacted, sample)
+        akia_sample = f"here is the key: {'AKIA'}{upper_filler}"
+        self.assertIn(
+            "[REDACTED]", semantic_evaluation._redact_text(akia_sample), akia_sample
+        )
+
+    def test_redacts_pem_private_keys_and_bare_jwts(self) -> None:
+        # Raising final_output_redacted's limit to 16000 means a PEM private
+        # key or a bare JWT past character 600 is no longer hidden by
+        # truncation alone -- both must be caught by shape. Fixtures are
+        # assembled at runtime from markers + filler so no complete
+        # credential-shaped literal exists on disk.
+        begin_marker = "-----BEGIN " + "PRIVATE KEY-----"
+        end_marker = "-----END " + "PRIVATE KEY-----"
+        key_body = "A" * 64 + "\n" + "B" * 64
+        complete_pem = f"prefix {begin_marker}\n{key_body}\n{end_marker} suffix"
+        redacted = semantic_evaluation._redact_text(complete_pem, limit=16000)
+        self.assertNotIn("PRIVATE KEY-----\nA", redacted)
+        self.assertIn("[REDACTED PRIVATE KEY]", redacted)
+
+        truncated_pem = "x" * 700 + begin_marker + "\n" + "C" * 500
+        redacted_truncated = semantic_evaluation._redact_text(truncated_pem, limit=16000)
+        self.assertNotIn(begin_marker, redacted_truncated)
+        self.assertNotIn("C" * 20, redacted_truncated)
+
+        jwt_header = "eyJ" + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        jwt_payload = "e" * 40
+        jwt_signature = "s" * 40
+        bare_jwt = f"{jwt_header}.{jwt_payload}.{jwt_signature}"
+        redacted_jwt = semantic_evaluation._redact_text(
+            f"here is a token {bare_jwt} end", limit=16000
+        )
+        self.assertNotIn(bare_jwt, redacted_jwt)
+        self.assertIn("[REDACTED]", redacted_jwt)
+
+    def test_failure_analysis_merges_coexisting_deterministic_and_review_failures(
+        self,
+    ) -> None:
+        # A case can have BOTH a deterministic dimension FAIL and an
+        # independent reviewer's own failing score in a different dimension.
+        # The old two-list construction dropped the review's failing
+        # dimension/reason entirely whenever a deterministic FAIL already
+        # existed for that case; both must now appear in one merged entry.
+        evaluation = {
+            "case_id": "SYNTHETIC-COEXIST-001",
+            "execution_classification": "EXECUTION_OK",
+            "semantic_status": "FAIL",
+            "dimensions": {
+                "groundedness": {
+                    "status": "FAIL",
+                    "score": 0,
+                    "reason": "No citation or source in the trace.",
+                    "evidence": [],
+                },
+                "factual_correctness": {
+                    "status": "REVIEW_REQUIRED",
+                    "score": None,
+                    "reason": "Needs independent review.",
+                    "evidence": [],
+                },
+            },
+            "independent_review": {
+                "scores": {"completeness": 1},
+                "reason": "The answer omits a required success criterion.",
+            },
+        }
+        entries = semantic_evaluation.build_failure_analysis_entries([evaluation])
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertIn("groundedness", entry["dimensions"])
+        self.assertIn("completeness", entry["dimensions"])
+        self.assertEqual(entry["dimensions"]["completeness"]["score"], 1)
+        self.assertEqual(
+            entry["classification"],
+            "semantic_output_or_evidence_gap_and_independent_review_failure",
+        )
+        self.assertIn("required success criterion", entry["reason"])
 
     def test_packet_preserves_bounded_external_provenance_without_verifying_it(self) -> None:
         trace = {
@@ -273,6 +444,52 @@ class SemanticEvaluationTests(unittest.TestCase):
             packet_trace["external_evidence_provenance"][0]["verification_status"],
             "UNVERIFIED_EXTERNAL",
         )
+
+    def test_packet_preserves_cited_identity_for_direct_url_citations(self) -> None:
+        # A direct-URL citation is redacted to the literal "[URL]" in the
+        # packet's own citations/sources fields (see the URL-redaction rule
+        # in _redact_text), so an independent reviewer could never rebind
+        # a cited identity from that field alone. The packet must carry the
+        # identity precomputed from the raw, pre-redaction trace instead.
+        trace = {
+            "case_id": "AA-RC-TEST-URL",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "citations": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "sources": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "external_evidence_provenance": [
+                {
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "source_identity": "external_openai_official",
+                    "verification_status": "UNVERIFIED_EXTERNAL",
+                }
+            ],
+            "output": {"answer": "Cited directly by URL."},
+        }
+        packet_trace = semantic_evaluation._packet_trace_for_independent_reviewer(trace)
+        self.assertEqual(packet_trace["citations"], ["[URL]"])
+        self.assertEqual(
+            packet_trace["cited_external_identities"], ["external_openai_official"]
+        )
+
+    def test_final_output_redacted_keeps_a_full_answer_for_the_reviewer(self) -> None:
+        # final_output_redacted is what an independent reviewer judges the answer
+        # against, unlike answer_excerpt_redacted (an intentionally short
+        # excerpt). It must not be capped down to excerpt length, or a
+        # multi-part answer's conclusion/recommendation is cut before the
+        # reviewer ever sees it.
+        long_answer = "س" * 4000 + " التوصية النهائية هنا." + "ص" * 100
+        trace = {
+            "case_id": "AA-RC-TEST",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "output": {"answer": long_answer},
+        }
+        packet_trace = semantic_evaluation._packet_trace_for_independent_reviewer(trace)
+        self.assertGreater(len(packet_trace["final_output_redacted"]), 600)
+        self.assertIn("التوصية النهائية هنا", packet_trace["final_output_redacted"])
 
     def test_aa_rc_026_groundedness_accepts_bound_project_and_openai_provenance(self) -> None:
         contract_case = next(
@@ -317,6 +534,94 @@ class SemanticEvaluationTests(unittest.TestCase):
         self.assertIn(
             "external_openai_official",
             result["dimensions"]["groundedness"]["evidence"],
+        )
+
+    def test_aa_rc_015_groundedness_accepts_classified_openai_identity(self) -> None:
+        # AA-RC-015's expected_sources are human-readable categories
+        # ("official OpenAI documentation") that never appear verbatim in a
+        # citation/source string. Before the source-category mapping, a
+        # correctly classified external_openai_official citation could never
+        # deterministically PASS this case -- it was stuck at
+        # REVIEW_REQUIRED even when fully correct.
+        contract_case = next(
+            case for case in self.contract["cases"] if case["case_id"] == "AA-RC-015"
+        )
+        trace = {
+            "case_id": "AA-RC-015",
+            "run_id": "aa-rc-015-grounded-run",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "tool_calls": [{"name": "web_search", "status": "success"}],
+            "citations": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "sources": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "external_evidence_provenance": [
+                {
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "source_identity": "external_openai_official",
+                    "verification_status": "UNVERIFIED_EXTERNAL",
+                }
+            ],
+            "output": {"answer": "Materiality-assessed, sourced from official OpenAI docs."},
+        }
+        result = evaluate_case(contract_case=contract_case, trace=trace)
+        self.assertEqual(result["dimensions"]["groundedness"]["status"], "PASS")
+
+    def test_aa_rc_015_groundedness_rejects_unused_official_provenance(self) -> None:
+        # A search can retrieve an official OpenAI page without the answer
+        # ever citing it -- external_evidence_provenance records everything
+        # retrieved, not everything used. Groundedness must not PASS just
+        # because an unrelated citation coexists with an unused official
+        # record in the same trace.
+        contract_case = next(
+            case for case in self.contract["cases"] if case["case_id"] == "AA-RC-015"
+        )
+        trace = {
+            "case_id": "AA-RC-015",
+            "run_id": "aa-rc-015-unbound-run",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "tool_calls": [{"name": "web_search", "status": "success"}],
+            "citations": ["https://example.test/unrelated-blog-post"],
+            "sources": ["https://example.test/unrelated-blog-post"],
+            "external_evidence_provenance": [
+                {
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "source_identity": "external_openai_official",
+                    "verification_status": "UNVERIFIED_EXTERNAL",
+                }
+            ],
+            "output": {"answer": "Some unrelated claim with a citation."},
+        }
+        result = evaluate_case(contract_case=contract_case, trace=trace)
+        self.assertEqual(result["dimensions"]["groundedness"]["status"], "REVIEW_REQUIRED")
+
+    def test_cited_external_identities_binds_by_index_marker_and_url(self) -> None:
+        trace = {
+            "citations": ["[2]"],
+            "sources": ["https://official.example/openai-doc"],
+            "external_evidence_provenance": [
+                {"url": "https://unused.example/one", "source_identity": "external_web_search"},
+                {"url": "https://official.example/openai-doc", "source_identity": "external_openai_official"},
+            ],
+        }
+        identities = semantic_evaluation.cited_external_identities(trace)
+        self.assertEqual(identities, {"external_openai_official"})
+
+    def test_generic_web_expected_source_accepts_any_external_identity(self) -> None:
+        # A generic expected-source phrase like "current web sources" should
+        # not require the vendor-specific OpenAI identity -- any classified
+        # external identity satisfies it.
+        self.assertTrue(
+            semantic_evaluation.expected_source_matches_identities(
+                "current web sources", {"external_web_search"}
+            )
+        )
+        self.assertFalse(
+            semantic_evaluation.expected_source_matches_identities(
+                "official OpenAI documentation", {"external_web_search"}
+            )
         )
 
     def test_review_input_template_is_independent_and_covers_all_cases(self) -> None:

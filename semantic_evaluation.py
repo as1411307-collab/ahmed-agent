@@ -107,6 +107,44 @@ def _redact_text(value: str, *, limit: int = 600) -> str:
         "[REDACTED]",
         redacted,
     )
+    # Bare, unlabeled credentials in known vendor formats -- these carry no
+    # "api_key:"/"token:" label for the pattern above to key off, so a raw
+    # sk-..., ghp_..., or AIza... string surviving in model output must be
+    # caught by its own shape instead.
+    redacted = re.sub(
+        r"\b(?:"
+        r"sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}"  # OpenAI / Anthropic style
+        r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub tokens
+        r"|github_pat_[A-Za-z0-9_]{20,}"
+        r"|AIza[0-9A-Za-z_-]{30,}"  # Google API key
+        r"|AKIA[0-9A-Z]{12,}"  # AWS access key id
+        r"|xox[baprs]-[A-Za-z0-9-]{10,}"  # Slack tokens
+        r")\b",
+        "[REDACTED]",
+        redacted,
+    )
+    # PEM private key blocks (RSA/EC/OpenSSH/PKCS8) -- match complete
+    # BEGIN/END pairs first, then fall back to an orphaned BEGIN marker with
+    # no matching END, since raising the excerpt limit means a truncated key
+    # can no longer rely on the length cap to hide its tail.
+    redacted = re.sub(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+        "[REDACTED PRIVATE KEY]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*",
+        "[REDACTED PRIVATE KEY]",
+        redacted,
+    )
+    # Bare JWTs (header.payload.signature) -- a JWT carries no "token:"
+    # label either, and its header segment reliably starts with "eyJ"
+    # (base64 of the JSON `{"`... object).
+    redacted = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
+        "[REDACTED]",
+        redacted,
+    )
     redacted = re.sub(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
         "[EMAIL]",
@@ -460,6 +498,83 @@ def _status_result(
     }
 
 
+# A contract's expected_sources are human-readable categories (e.g. "official
+# OpenAI documentation", "current web sources"), not literal text that would
+# ever appear in a trace's citations/sources. Matching them against classified
+# provenance needs a keyword -> controlled-identity mapping instead of
+# substring containment. This is the single canonical table: the independent
+# reviewer (independent_semantic_evaluator.py) imports it from here so a
+# category expectation is judged identically by both the producer-side
+# deterministic check and the independent-review-side check.
+EXTERNAL_SOURCE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "external_openai_official": ("openai",),
+}
+
+
+def expected_source_matches_identities(expected_source: str, identities: set[str]) -> bool:
+    """Does an expected-source category phrase match any observed identity?
+
+    A generic phrase such as "current web sources" is satisfied by any
+    classified external source, official or not; a vendor-specific phrase
+    such as "official OpenAI documentation" only matches its own identity.
+    """
+
+    folded = expected_source.casefold()
+    if ("web" in folded or "internet" in folded) and any(
+        identity.startswith("external_") for identity in identities
+    ):
+        return True
+    return any(
+        identity in identities and any(keyword in folded for keyword in keywords)
+        for identity, keywords in EXTERNAL_SOURCE_CATEGORY_KEYWORDS.items()
+    )
+
+
+_CITATION_INDEX_RE = re.compile(r"^\[(\d+)\]$")
+
+
+def cited_external_identities(trace: dict[str, Any]) -> set[str]:
+    """Identities of only the provenance records the answer actually cites.
+
+    ``external_evidence_provenance`` records everything a search *retrieved*,
+    which is not the same as what the answer *used*: a search can surface an
+    official source the model never quoted. A citation/source binds to a
+    provenance record either by a "[N]" 1-indexed marker (this dataset's
+    format) or by matching URL, so an unrelated or absent citation can never
+    inherit an unused record's identity.
+    """
+
+    used = {
+        str(value)
+        for value in [*trace.get("citations", []), *trace.get("sources", [])]
+        if isinstance(value, str)
+    }
+    provenance = [
+        item
+        for item in trace.get("external_evidence_provenance", [])
+        if isinstance(item, dict)
+    ]
+    identities: set[str] = set()
+    for marker in used:
+        match = _CITATION_INDEX_RE.match(marker.strip())
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(provenance):
+                identity = provenance[index].get("source_identity")
+                if identity:
+                    identities.add(str(identity))
+    provenance_by_url = {
+        str(item["url"]): item.get("source_identity")
+        for item in provenance
+        if item.get("url")
+    }
+    for marker in used:
+        identity = provenance_by_url.get(marker)
+        if identity:
+            identities.add(str(identity))
+    return identities
+
+
 def _deterministic_groundedness(
     reference: dict[str, Any],
     trace: dict[str, Any],
@@ -467,6 +582,7 @@ def _deterministic_groundedness(
     expected_sources = reference["groundedness"]["expected_sources"]
     citations = trace.get("citations", [])
     sources = trace.get("sources", [])
+    observed_identities = cited_external_identities(trace)
     if reference.get("case_id") == "AA-RC-026":
         project_provenance = [
             item
@@ -481,7 +597,11 @@ def _deterministic_groundedness(
             and item.get("source_identity") == "external_openai_official"
             and item.get("verification_status") == "UNVERIFIED_EXTERNAL"
         ]
-        has_bound_citations = bool(citations or sources)
+        # A retrieved official-OpenAI record is not the same as a *cited* one:
+        # require the answer to actually reference that identity, not merely
+        # cite something else while an unrelated official result sat unused
+        # in provenance.
+        has_bound_citations = "external_openai_official" in observed_identities
         if (
             trace.get("evidence_preconditions", {}).get("status") == "READY"
             and project_provenance
@@ -523,6 +643,7 @@ def _deterministic_groundedness(
         source
         for source in expected_sources
         if str(source).casefold() in observed
+        or expected_source_matches_identities(str(source), observed_identities)
     ]
     if matching:
         return _status_result(
@@ -694,7 +815,7 @@ def _packet_trace_for_independent_reviewer(trace: dict[str, Any]) -> dict[str, A
         "execution_error": trace.get("execution_error"),
         "provider": trace.get("provider"),
         "model": trace.get("model"),
-        "final_output_redacted": _redact_text(_trace_answer(trace)),
+        "final_output_redacted": _redact_text(_trace_answer(trace), limit=16000),
         "tool_names": sorted(_trace_tools(trace)),
         "citations": [
             _redact_text(str(value), limit=600)
@@ -710,6 +831,13 @@ def _packet_trace_for_independent_reviewer(trace: dict[str, Any]) -> dict[str, A
         "external_evidence_provenance": _safe_external_provenance(
             trace.get("external_evidence_provenance")
         ),
+        # Computed on the raw, pre-redaction trace: a direct-URL citation is
+        # redacted to the literal string "[URL]" above (and provenance URLs
+        # are separately query-stripped), so neither survives as a key an
+        # independent reviewer could rebind by. Precomputing here is the only
+        # point that ever sees the real citation and the real provenance URL
+        # at the same time.
+        "cited_external_identities": sorted(cited_external_identities(trace)),
         "evidence_preconditions": trace.get("evidence_preconditions"),
         "upload_e2e": trace.get("upload_e2e"),
     }
@@ -925,6 +1053,95 @@ def apply_reviews(
     return merged
 
 
+def build_failure_analysis_entries(
+    evaluations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One failure-analysis entry per case, merging deterministic and review failures.
+
+    apply_reviews() can drive semantic_status to FAIL purely from an
+    independent reviewer's scores (score <=1 on some dimension), whether or
+    not a deterministic dimension also failed on its own. A case can carry
+    both at once (e.g. a deterministic groundedness FAIL alongside a
+    reviewer-scored completeness FAIL); merging them into one entry per case
+    keeps the reviewer's failing dimension/reason visible instead of
+    silently dropping it behind the deterministic entry.
+    """
+
+    entries: list[dict[str, Any]] = []
+    for result in evaluations:
+        deterministic_fail_dims = {
+            dimension: value
+            for dimension, value in result["dimensions"].items()
+            if value["status"] == "FAIL"
+        }
+        review = result.get("independent_review") or {}
+        review_fail_dims = {
+            dimension: {
+                "status": "FAIL",
+                "score": score,
+                "reason": "The independent reviewer scored this dimension as failing.",
+            }
+            for dimension, score in (review.get("scores") or {}).items()
+            if isinstance(score, int) and score <= 1
+        }
+        has_deterministic_fail = bool(deterministic_fail_dims)
+        has_review_fail = (
+            result["semantic_status"] == "FAIL"
+            and result.get("independent_review") is not None
+        )
+        if not has_deterministic_fail and not has_review_fail:
+            continue
+        is_execution_failure = (
+            result.get("execution_classification", "EXECUTION_OK") != "EXECUTION_OK"
+        )
+        if has_deterministic_fail and has_review_fail:
+            classification = (
+                "execution_or_provider_failure"
+                if is_execution_failure
+                else "semantic_output_or_evidence_gap_and_independent_review_failure"
+            )
+            reason = (
+                "The failure combines a deterministic dimension failure with the "
+                "independent reviewer's own failing score(s): "
+                + (
+                    review.get("reason")
+                    or "the reviewer scored a dimension as failing."
+                )
+            )
+            next_action = "independent_review_or_reexecute_with_grounded_evidence"
+        elif has_deterministic_fail:
+            classification = (
+                "execution_or_provider_failure"
+                if is_execution_failure
+                else "semantic_output_or_evidence_gap"
+            )
+            reason = (
+                "The failure is derived from answer/evidence assertions in the "
+                "stored trace; no execution, persistence, provider, or policy "
+                "boundary error is present in this result."
+            )
+            next_action = "independent_review_or_reexecute_with_grounded_evidence"
+        else:
+            classification = "independent_review_failure"
+            reason = review.get("reason") or "The independent reviewer scored this case as FAIL."
+            next_action = "address_independent_review_findings"
+        entries.append(
+            {
+                "case_id": result["case_id"],
+                "execution_classification": result.get(
+                    "execution_classification",
+                    "EXECUTION_OK",
+                ),
+                "dimensions": {**deterministic_fail_dims, **review_fail_dims},
+                "classification": classification,
+                "code_bug_confirmed": False,
+                "reason": reason,
+                "next_action": next_action,
+            }
+        )
+    return entries
+
+
 def evaluate_baseline(
     *,
     contract: dict[str, Any],
@@ -986,37 +1203,7 @@ def evaluate_baseline(
         status: sum(item["semantic_status"] == status for item in evaluations)
         for status in ("PASS", "FAIL", "REVIEW_REQUIRED", "NOT_DETERMINED")
     }
-    deterministic_failures = [
-        {
-            "case_id": result["case_id"],
-            "execution_classification": result.get(
-                "execution_classification",
-                "EXECUTION_OK",
-            ),
-            "dimensions": {
-                dimension: value
-                for dimension, value in result["dimensions"].items()
-                if value["status"] == "FAIL"
-            },
-            "classification": (
-                "execution_or_provider_failure"
-                if result.get("execution_classification") != "EXECUTION_OK"
-                else "semantic_output_or_evidence_gap"
-            ),
-            "code_bug_confirmed": False,
-            "reason": (
-                "The failure is derived from answer/evidence assertions in the "
-                "stored trace; no execution, persistence, provider, or policy "
-                "boundary error is present in this result."
-            ),
-            "next_action": "independent_review_or_reexecute_with_grounded_evidence",
-        }
-        for result in evaluations
-        if any(
-            value["status"] == "FAIL"
-            for value in result["dimensions"].values()
-        )
-    ]
+    deterministic_failures = build_failure_analysis_entries(evaluations)
     execution_failures = [
         {
             "case_id": result["case_id"],
