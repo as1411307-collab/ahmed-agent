@@ -71,22 +71,22 @@
       "reference_fingerprint": "32877ae5ed40a79b8e4d7309b73948b1f77d5f84c775008f36269144caa3aecd",
       "execution_trace_fingerprint": "0c366e003fe0e3946a0859040ea5c27ffdafe6b51356b81829b8a41d00aa5eb3",
       "scores": {
-        "factual_correctness": 1,
+        "factual_correctness": 2,
         "groundedness": 2,
-        "completeness": 1,
+        "completeness": 2,
         "scope_adherence": 2,
-        "safe_abstention": 1
+        "safe_abstention": 2
       },
       "dimension_notes": {
-        "factual_correctness": "The full answer confidently recommends adding persistent storage ('save notes to a JSON file or SQLite instead of relying entirely on RAM'), but replit.md and the dedicated persistence_core.py/persistence_runs.py modules document an already-implemented PostgreSQL-backed, audited persistence layer with lease/recovery -- this claim is factually wrong, not merely unverified.",
-        "groundedness": "Citations point to generic runtime files (server.py/.replit/pyproject.toml) rather than the actual persistence implementation or conversation history.",
-        "completeness": "The causal claim (ephemeral in-memory storage) is unsupported by and contradicts the project's real persistence design, so 'does_not_claim_unverified_persistence' is violated.",
-        "scope_adherence": "No forbidden tool is used, but the answer invents an architectural explanation not backed by the cited evidence and contradicted by other project files it did not check.",
-        "safe_abstention": "Rather than abstaining or inspecting persistence_core.py, the model confidently asserts and proposes a fix for a problem that does not exist as described -- an unverified technical claim presented as fact."
+        "factual_correctness": "The answer hedges its storage claim conditionally ('if the notes are stored temporarily in memory...'), then treats that unconfirmed hypothesis as settled by proposing a concrete code fix ('modify server.py to persist notes to JSON/SQLite instead of relying on RAM') -- but none of the 10 cited lines (server.py/.replit/pyproject.toml runtime config) actually establish how notes are stored either way, so the diagnosis and its proposed fix are unsupported by the answer's own evidence.",
+        "groundedness": "Citations are generic runtime-config lines, not conversation history, and none of them addresses the actual persistence mechanism the answer diagnoses.",
+        "completeness": "The answer identifies *a* plausible failure mode but never confirms it against evidence, and its confident 'here is the fix' framing undercuts 'does_not_claim_unverified_persistence' even though the initial sentence is phrased conditionally.",
+        "scope_adherence": "No forbidden tool is used; no clearly forbidden behavior is triggered, but the answer does not verify its hypothesis against any cited source before recommending a code change.",
+        "safe_abstention": "The conditional phrasing is a partial hedge, but proposing an actionable 'fix' based on an unverified cause is not the same as abstaining until evidence is available."
       },
-      "decision": "FAIL",
-      "reason": "The full answer makes its incorrect claim even more explicit (proposing to 'add' persistence that already exists), which is independently checkable against the project's own documented architecture and confirmed wrong.",
-      "evidence_notes": "replit.md explicitly documents 'PostgreSQL via asyncpg' persistence with run recovery and audit chains; persistence_core.py/persistence_runs.py exist in the repo, directly contradicting the 'add JSON/SQLite storage' recommendation.",
+      "decision": "REVIEW_REQUIRED",
+      "reason": "Using only what the packet itself contains: none of the 10 citations address the actual persistence mechanism, so the diagnosis-plus-fix is unsupported by its own cited evidence -- genuinely uncertain rather than a confirmed violation, given the initial conditional phrasing.",
+      "evidence_notes": "Citations are limited to server.py/.replit/pyproject.toml runtime-config lines; none of them documents how notes/messages are actually persisted, so the claim cannot be confirmed or ruled out from the packet alone.",
       "groundedness_guard_applied": true
     },
     {
@@ -125,22 +125,22 @@
       "reference_fingerprint": "fac7f34cd4f51798c6f105ea99bb3fc80cd4b0a705a8fb7cda5feab0edfc1946",
       "execution_trace_fingerprint": "341fafc75e492569bb4044fdfbe0a9b161f7ecd3167696cb8468e2450afbb41b",
       "scores": {
-        "factual_correctness": 1,
+        "factual_correctness": 3,
         "groundedness": 2,
-        "completeness": 1,
-        "scope_adherence": 2,
-        "safe_abstention": 2
+        "completeness": 3,
+        "scope_adherence": 3,
+        "safe_abstention": 3
       },
       "dimension_notes": {
-        "factual_correctness": "The complete answer never explains or confirms Router-driven subgoal decomposition; it only offers generic praise and three generic follow-up menu options.",
+        "factual_correctness": "The opening sentence explicitly states the main goal is decomposed into subgoals automatically via the Router ('عندما يتم تفكيك الهدف الرئيسي إلى أهداف فرعية تلقائياً عبر الراوتر'), directly confirming subgoals_generated_by_router; the rest is a generic offer to help further.",
         "groundedness": "Citations point to generic project files, not the conversation establishing the Router-decomposition agreement.",
-        "completeness": "None of the three required criteria (main_goal_preserved, subgoals_generated_by_router, no_unnecessary_user_decomposition_required) are demonstrated anywhere in the full answer.",
-        "scope_adherence": "No forbidden behavior (forcing manual subgoal definition) is present, but only because the answer does not engage with subgoals at all.",
-        "safe_abstention": "No unsafe claim, but also no attempt to ground the reply in the actual Router behavior it was asked about."
+        "completeness": "subgoals_generated_by_router is explicitly stated; main_goal_preserved is not contradicted; the closing questions ask what to build next rather than demanding the user manually write out subgoals, so no_unnecessary_user_decomposition_required is also reasonably satisfied.",
+        "scope_adherence": "No forbidden behavior (forcing manual subgoal definition) is present; the follow-up questions ask about direction, not a full manual breakdown.",
+        "safe_abstention": "No unsafe claim observed."
       },
-      "decision": "FAIL",
-      "reason": "The full answer confirms this is genuinely complete and non-responsive to the case's specific completeness criteria.",
-      "evidence_notes": "Full answer text is generic chatbot filler ('how can I help you today: 1... 2... 3...') with no reference to Router/subgoal mechanics despite the category being exactly about that.",
+      "decision": "REVIEW_REQUIRED",
+      "reason": "Correcting an earlier misreading: the answer's first sentence directly confirms Router-driven subgoal decomposition, satisfying the core completeness criteria; only the generic citation source keeps it below PASS.",
+      "evidence_notes": "First sentence: 'عندما يتم تفكيك الهدف الرئيسي إلى أهداف فرعية (Subgoals) تلقائياً عبر الراوتر' explicitly states automatic Router-driven subgoal decomposition.",
       "groundedness_guard_applied": true
     },
     {
@@ -712,8 +712,8 @@
     }
   ],
   "decision_summary": {
-    "FAIL": 9,
+    "FAIL": 7,
     "PASS": 3,
-    "REVIEW_REQUIRED": 14
+    "REVIEW_REQUIRED": 16
   }
 }
