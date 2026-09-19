@@ -342,6 +342,35 @@ class SemanticEvaluationTests(unittest.TestCase):
             "[REDACTED]", semantic_evaluation._redact_text(akia_sample), akia_sample
         )
 
+    def test_redacts_pem_private_keys_and_bare_jwts(self) -> None:
+        # Raising final_output_redacted's limit to 16000 means a PEM private
+        # key or a bare JWT past character 600 is no longer hidden by
+        # truncation alone -- both must be caught by shape. Fixtures are
+        # assembled at runtime from markers + filler so no complete
+        # credential-shaped literal exists on disk.
+        begin_marker = "-----BEGIN " + "PRIVATE KEY-----"
+        end_marker = "-----END " + "PRIVATE KEY-----"
+        key_body = "A" * 64 + "\n" + "B" * 64
+        complete_pem = f"prefix {begin_marker}\n{key_body}\n{end_marker} suffix"
+        redacted = semantic_evaluation._redact_text(complete_pem, limit=16000)
+        self.assertNotIn("PRIVATE KEY-----\nA", redacted)
+        self.assertIn("[REDACTED PRIVATE KEY]", redacted)
+
+        truncated_pem = "x" * 700 + begin_marker + "\n" + "C" * 500
+        redacted_truncated = semantic_evaluation._redact_text(truncated_pem, limit=16000)
+        self.assertNotIn(begin_marker, redacted_truncated)
+        self.assertNotIn("C" * 20, redacted_truncated)
+
+        jwt_header = "eyJ" + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        jwt_payload = "e" * 40
+        jwt_signature = "s" * 40
+        bare_jwt = f"{jwt_header}.{jwt_payload}.{jwt_signature}"
+        redacted_jwt = semantic_evaluation._redact_text(
+            f"here is a token {bare_jwt} end", limit=16000
+        )
+        self.assertNotIn(bare_jwt, redacted_jwt)
+        self.assertIn("[REDACTED]", redacted_jwt)
+
     def test_packet_preserves_bounded_external_provenance_without_verifying_it(self) -> None:
         trace = {
             "case_id": "AA-RC-026",
@@ -434,6 +463,52 @@ class SemanticEvaluationTests(unittest.TestCase):
         self.assertIn(
             "external_openai_official",
             result["dimensions"]["groundedness"]["evidence"],
+        )
+
+    def test_aa_rc_015_groundedness_accepts_classified_openai_identity(self) -> None:
+        # AA-RC-015's expected_sources are human-readable categories
+        # ("official OpenAI documentation") that never appear verbatim in a
+        # citation/source string. Before the source-category mapping, a
+        # correctly classified external_openai_official citation could never
+        # deterministically PASS this case -- it was stuck at
+        # REVIEW_REQUIRED even when fully correct.
+        contract_case = next(
+            case for case in self.contract["cases"] if case["case_id"] == "AA-RC-015"
+        )
+        trace = {
+            "case_id": "AA-RC-015",
+            "run_id": "aa-rc-015-grounded-run",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "tool_calls": [{"name": "web_search", "status": "success"}],
+            "citations": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "sources": ["https://platform.openai.com/docs/guides/tools-web-search"],
+            "external_evidence_provenance": [
+                {
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "source_identity": "external_openai_official",
+                    "verification_status": "UNVERIFIED_EXTERNAL",
+                }
+            ],
+            "output": {"answer": "Materiality-assessed, sourced from official OpenAI docs."},
+        }
+        result = evaluate_case(contract_case=contract_case, trace=trace)
+        self.assertEqual(result["dimensions"]["groundedness"]["status"], "PASS")
+
+    def test_generic_web_expected_source_accepts_any_external_identity(self) -> None:
+        # A generic expected-source phrase like "current web sources" should
+        # not require the vendor-specific OpenAI identity -- any classified
+        # external identity satisfies it.
+        self.assertTrue(
+            semantic_evaluation.expected_source_matches_identities(
+                "current web sources", {"external_web_search"}
+            )
+        )
+        self.assertFalse(
+            semantic_evaluation.expected_source_matches_identities(
+                "official OpenAI documentation", {"external_web_search"}
+            )
         )
 
     def test_review_input_template_is_independent_and_covers_all_cases(self) -> None:

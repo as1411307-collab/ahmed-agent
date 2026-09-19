@@ -123,6 +123,28 @@ def _redact_text(value: str, *, limit: int = 600) -> str:
         "[REDACTED]",
         redacted,
     )
+    # PEM private key blocks (RSA/EC/OpenSSH/PKCS8) -- match complete
+    # BEGIN/END pairs first, then fall back to an orphaned BEGIN marker with
+    # no matching END, since raising the excerpt limit means a truncated key
+    # can no longer rely on the length cap to hide its tail.
+    redacted = re.sub(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+        "[REDACTED PRIVATE KEY]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*",
+        "[REDACTED PRIVATE KEY]",
+        redacted,
+    )
+    # Bare JWTs (header.payload.signature) -- a JWT carries no "token:"
+    # label either, and its header segment reliably starts with "eyJ"
+    # (base64 of the JSON `{"`... object).
+    redacted = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
+        "[REDACTED]",
+        redacted,
+    )
     redacted = re.sub(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
         "[EMAIL]",
@@ -476,6 +498,38 @@ def _status_result(
     }
 
 
+# A contract's expected_sources are human-readable categories (e.g. "official
+# OpenAI documentation", "current web sources"), not literal text that would
+# ever appear in a trace's citations/sources. Matching them against classified
+# provenance needs a keyword -> controlled-identity mapping instead of
+# substring containment. This is the single canonical table: the independent
+# reviewer (independent_semantic_evaluator.py) imports it from here so a
+# category expectation is judged identically by both the producer-side
+# deterministic check and the independent-review-side check.
+EXTERNAL_SOURCE_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "external_openai_official": ("openai",),
+}
+
+
+def expected_source_matches_identities(expected_source: str, identities: set[str]) -> bool:
+    """Does an expected-source category phrase match any observed identity?
+
+    A generic phrase such as "current web sources" is satisfied by any
+    classified external source, official or not; a vendor-specific phrase
+    such as "official OpenAI documentation" only matches its own identity.
+    """
+
+    folded = expected_source.casefold()
+    if ("web" in folded or "internet" in folded) and any(
+        identity.startswith("external_") for identity in identities
+    ):
+        return True
+    return any(
+        identity in identities and any(keyword in folded for keyword in keywords)
+        for identity, keywords in EXTERNAL_SOURCE_CATEGORY_KEYWORDS.items()
+    )
+
+
 def _deterministic_groundedness(
     reference: dict[str, Any],
     trace: dict[str, Any],
@@ -483,6 +537,11 @@ def _deterministic_groundedness(
     expected_sources = reference["groundedness"]["expected_sources"]
     citations = trace.get("citations", [])
     sources = trace.get("sources", [])
+    observed_identities = {
+        str(item.get("source_identity") or "")
+        for item in trace.get("external_evidence_provenance", [])
+        if isinstance(item, dict)
+    }
     if reference.get("case_id") == "AA-RC-026":
         project_provenance = [
             item
@@ -539,6 +598,7 @@ def _deterministic_groundedness(
         source
         for source in expected_sources
         if str(source).casefold() in observed
+        or expected_source_matches_identities(str(source), observed_identities)
     ]
     if matching:
         return _status_result(

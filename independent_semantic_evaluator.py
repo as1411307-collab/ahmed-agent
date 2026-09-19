@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from config import AHMED_OPENAI_MODEL
+from semantic_evaluation import expected_source_matches_identities
 
 
 REVIEW_RUBRIC_VERSION = "semantic-review-rubric-v1"
@@ -276,6 +277,11 @@ def build_independent_review_document(
                 ],
             ]
         ).casefold()
+        observed_identities = {
+            str(item.get("source_identity") or "")
+            for item in trace.get("external_evidence_provenance", [])
+            if isinstance(item, dict)
+        }
         bound_aa_rc_026_provenance = (
             case.get("case_id") == "AA-RC-026"
             and trace.get("evidence_preconditions", {}).get("status") == "READY"
@@ -296,7 +302,11 @@ def build_independent_review_document(
             deterministic_groundedness = "PASS"
         elif not trace.get("citations") and not trace.get("sources"):
             deterministic_groundedness = "FAIL"
-        elif any(source.casefold() in observed for source in expected_sources):
+        elif any(
+            source.casefold() in observed
+            or expected_source_matches_identities(source, observed_identities)
+            for source in expected_sources
+        ):
             deterministic_groundedness = "PASS"
         else:
             deterministic_groundedness = "REVIEW_REQUIRED"
