@@ -183,12 +183,21 @@ class AuthBackoffTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_auth_clears_failures(self) -> None:
         import auth
         import config
+        import time
 
         token = config.AHMED_OWNER_TOKEN
         if not token:
             self.skipTest("AHMED_OWNER_TOKEN not configured")
         bad = self._request("wrong-token")
         await auth.authorize_owner(bad, endpoint="/mcp")
+        # Expire the throttle window deterministically (avoids sleeping in tests):
+        # the recorded failure is older than the reset window, so the next request
+        # is processed instead of throttled.
+        failures, _ = auth._failed_attempts["10.0.0.9"]
+        auth._failed_attempts["10.0.0.9"] = (
+            failures,
+            time.monotonic() - auth._AUTH_FAILURE_RESET_SECONDS - 1,
+        )
         good = self._request(token)
         user, status, _ = await auth.authorize_owner(good, endpoint="/mcp")
         self.assertIsNotNone(user)
