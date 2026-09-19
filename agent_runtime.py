@@ -80,10 +80,24 @@ from source_of_truth import (
 from source_status import inspect_source_status as inspect_existing_source_status
 
 
+def _tool_call_signature(**kwargs: object) -> str:
+    """A stable signature identifying one tool call's arguments.
+
+    Distinguishes "the same call, retried unchanged" from "a different call
+    to the same tool" (e.g. two distinct web_search queries) so escalation is
+    keyed to the actual repeated action, not just the tool's name -- two
+    unrelated failing calls to the same tool must not be miscounted as one
+    call retried twice.
+    """
+
+    return repr(sorted(kwargs.items(), key=lambda item: item[0]))
+
+
 def _reflect_on_tool_failure(
     deps: AgentDeps,
     tool_name: str,
     error: BaseException,
+    call_signature: str,
 ) -> ModelRetry:
     """Turn a tool failure into a retry prompt carrying this run's failure memory.
 
@@ -91,34 +105,61 @@ def _reflect_on_tool_failure(
     what it already tried; PydanticAI's own multi-step tool loop means the
     model can just repeat the identical failing call forever. Recording each
     failure in ``deps.tool_failure_notes`` (mutated in place, same pattern as
-    ``evidence_envelopes``) and naming the attempt count in the retry message
-    is a minimal Reflexion-style nudge: the model is asked to reason about why
-    it failed before trying again, and is told explicitly once it has already
-    failed more than once in this same turn.
+    ``evidence_envelopes``), keyed by (tool, call_signature) rather than the
+    tool name alone, is a minimal Reflexion-style nudge: the model is told to
+    act on why it failed instead of just narrating it (a bare text reply
+    would otherwise become the run's final `str` output and end the turn),
+    and is told explicitly once the *exact same call* has already failed more
+    than once in this same turn.
+
+    Only the exception's type name is ever included, never ``str(error)``:
+    the message crosses the model-provider boundary and can be echoed back to
+    the user, and an underlying error can carry a credential-bearing URL,
+    provider response body, database detail, or local path.
     """
 
-    reason = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+    reason = type(error).__name__
+    key = f"{tool_name}:{call_signature}"
     prior_attempts = 0
     if deps.tool_failure_notes is not None:
         prior_attempts = sum(
-            1 for note in deps.tool_failure_notes if note.get("tool") == tool_name
+            1 for note in deps.tool_failure_notes if note.get("key") == key
         )
         deps.tool_failure_notes.append(
-            {"tool": tool_name, "reason": reason, "attempt": prior_attempts + 1}
+            {"tool": tool_name, "key": key, "reason": reason, "attempt": prior_attempts + 1}
         )
     attempt_number = prior_attempts + 1
     if attempt_number == 1:
         return ModelRetry(
-            f"The `{tool_name}` call failed: {reason}. Before retrying, briefly "
-            "state (in one sentence) why this likely failed, then either retry "
-            "with adjusted arguments or use a different tool."
+            f"The `{tool_name}` call failed ({reason}). Do not reply with text "
+            "yet -- decide why this likely failed, then immediately call a "
+            "tool again: either retry with clearly different arguments or use "
+            "a different tool."
         )
     return ModelRetry(
-        f"The `{tool_name}` call failed again ({attempt_number} times this turn): "
-        f"{reason}. Do not repeat the same call unchanged -- either try clearly "
-        "different arguments, use a different tool, or abstain and tell the user "
-        "honestly that this capability is not working right now."
+        f"The exact same `{tool_name}` call has now failed {attempt_number} "
+        f"times in a row ({reason}). Do not repeat it unchanged again -- call "
+        "a different tool, or if none can help, give the user a final honest "
+        "answer that this capability is not working right now."
     )
+
+
+def _clear_tool_failure_note(
+    deps: AgentDeps, tool_name: str, call_signature: str
+) -> None:
+    """Drop standing failure memory for one exact call once it succeeds.
+
+    Without this, a call that failed once, succeeded on retry, and then
+    (much later, coincidentally) failed again with identical arguments would
+    be miscounted as an uninterrupted repeat and escalate immediately.
+    """
+
+    if deps.tool_failure_notes is None:
+        return
+    key = f"{tool_name}:{call_signature}"
+    deps.tool_failure_notes[:] = [
+        note for note in deps.tool_failure_notes if note.get("key") != key
+    ]
 
 
 def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[AgentDeps, str]:
@@ -129,6 +170,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         max_results: Annotated[int, Field(ge=1, le=5)] = 5,
     ) -> dict[str, object]:
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature(
+            query=query.strip(), mode=mode, max_results=max_results
+        )
         try:
             result = await existing_web_search(
                 query=query.strip(),
@@ -143,7 +187,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"mode": mode},
                 )
-            raise _reflect_on_tool_failure(ctx.deps, "web_search", error) from error
+            raise _reflect_on_tool_failure(
+                ctx.deps, "web_search", error, call_signature
+            ) from error
 
         safe_metadata: dict[str, Any] = {"mode": mode}
         if isinstance(result, dict):
@@ -160,13 +206,23 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 if isinstance(value, (int, float)):
                     safe_metadata[key] = value
         safe_metadata["policy"] = tool_metadata("web_search")
+        ok = result.get("ok", True) if isinstance(result, dict) else True
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
                 "web_search",
-                "success" if result.get("ok", True) else "failed",
+                "success" if ok else "failed",
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        if not ok:
+            # A result the tool itself reports as unsuccessful (e.g. the
+            # search provider is unconfigured) is a real failure the model
+            # must not silently accept and move on from -- route it through
+            # the same reflect-and-retry path as a raised exception.
+            raise _reflect_on_tool_failure(
+                ctx.deps, "web_search", RuntimeError("unsuccessful_result"), call_signature
+            )
+        _clear_tool_failure_note(ctx.deps, "web_search", call_signature)
         if isinstance(result, dict):
             return {
                 **result,
@@ -189,6 +245,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         max_results: Annotated[int, Field(ge=1, le=5)] = 5,
     ) -> dict[str, object]:
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature(
+            query=query.strip(), intent=intent, max_results=max_results
+        )
         try:
             result = await existing_academic_search(
                 query=query.strip(),
@@ -203,12 +262,15 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"intent": intent, "scope": "WEB"},
                 )
-            raise _reflect_on_tool_failure(ctx.deps, "academic_search", error) from error
+            raise _reflect_on_tool_failure(
+                ctx.deps, "academic_search", error, call_signature
+            ) from error
 
+        ok = result.get("ok", True)
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
                 "academic_search",
-                "success" if result.get("ok", True) else "failed",
+                "success" if ok else "failed",
                 int((time.perf_counter() - started_at) * 1000),
                 {
                     "intent": intent,
@@ -217,6 +279,14 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "providers_used": result.get("providers_used", []),
                 },
             )
+        if not ok:
+            raise _reflect_on_tool_failure(
+                ctx.deps,
+                "academic_search",
+                RuntimeError("unsuccessful_result"),
+                call_signature,
+            )
+        _clear_tool_failure_note(ctx.deps, "academic_search", call_signature)
         return {
             **result,
             "data_boundary": data_only_boundary("academic_external"),
@@ -241,6 +311,14 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         max_results: Annotated[int, Field(ge=1, le=5)] = 5,
     ) -> dict[str, object]:
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature(
+            query=query.strip(),
+            intent=intent,
+            owner=owner.strip() if owner else None,
+            repo=repo.strip() if repo else None,
+            issue_number=issue_number,
+            max_results=max_results,
+        )
         try:
             result = await existing_github_search(
                 query=query.strip(),
@@ -258,12 +336,15 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"intent": intent, "scope": "WEB"},
                 )
-            raise _reflect_on_tool_failure(ctx.deps, "github_search", error) from error
+            raise _reflect_on_tool_failure(
+                ctx.deps, "github_search", error, call_signature
+            ) from error
 
+        ok = result.get("ok", True)
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
                 "github_search",
-                "success" if result.get("ok", True) else "failed",
+                "success" if ok else "failed",
                 int((time.perf_counter() - started_at) * 1000),
                 {
                     "intent": intent,
@@ -272,6 +353,14 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "providers_used": result.get("providers_used", []),
                 },
             )
+        if not ok:
+            raise _reflect_on_tool_failure(
+                ctx.deps,
+                "github_search",
+                RuntimeError("unsuccessful_result"),
+                call_signature,
+            )
+        _clear_tool_failure_note(ctx.deps, "github_search", call_signature)
         return {
             **result,
             "data_boundary": data_only_boundary("github_public_api"),
@@ -283,6 +372,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         top_k: Annotated[int, Field(ge=1, le=MAX_TOP_K)] = DEFAULT_TOP_K,
     ) -> dict[str, object]:
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature(query=query, top_k=top_k)
         try:
             result = await existing_my_files_search(query=query, top_k=top_k)
         except Exception as error:
@@ -293,11 +383,14 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "MY_FILES"},
                 )
-            raise _reflect_on_tool_failure(ctx.deps, "search_my_files", error) from error
+            raise _reflect_on_tool_failure(
+                ctx.deps, "search_my_files", error, call_signature
+            ) from error
+        ok = result.get("ok", True)
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
                 "search_my_files",
-                "success" if result.get("ok", True) else "failed",
+                "success" if ok else "failed",
                 int((time.perf_counter() - started_at) * 1000),
                 {
                     "scope": "MY_FILES",
@@ -305,6 +398,14 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "policy": tool_metadata("search_my_files"),
                 },
             )
+        if not ok:
+            raise _reflect_on_tool_failure(
+                ctx.deps,
+                "search_my_files",
+                RuntimeError("unsuccessful_result"),
+                call_signature,
+            )
+        _clear_tool_failure_note(ctx.deps, "search_my_files", call_signature)
         return {
             **result,
             "data_boundary": data_only_boundary("uploaded_files"),
@@ -315,22 +416,43 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         reason: Annotated[str, Field(min_length=1, max_length=500)],
     ) -> dict[str, object]:
         policy = get_tool_policy("test_sensitive_action")
-        if not ctx.deps.conversation_id or not ctx.deps.run_id:
-            raise RuntimeError("Sensitive actions require a persisted session and run.")
-        action_id = str(uuid4())
-        idempotency_key = hashlib.sha256(
-            f"{ctx.deps.run_id}:test_sensitive_action:{reason.strip()}".encode("utf-8")
-        ).hexdigest()
-        pending_action = await create_pending_action(
-            action_id=action_id,
-            session_id=ctx.deps.conversation_id,
-            run_id=ctx.deps.run_id,
-            user_id=ctx.deps.user_id or "unauthenticated",
-            tool_name=policy.tool_name,
-            risk_level=policy.risk_level.value,
-            arguments={"reason": reason.strip()},
-            idempotency_key=idempotency_key,
-        )
+        call_signature = _tool_call_signature(reason=reason.strip())
+        try:
+            if not ctx.deps.conversation_id or not ctx.deps.run_id:
+                raise RuntimeError(
+                    "Sensitive actions require a persisted session and run."
+                )
+            action_id = str(uuid4())
+            idempotency_key = hashlib.sha256(
+                f"{ctx.deps.run_id}:test_sensitive_action:{reason.strip()}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            pending_action = await create_pending_action(
+                action_id=action_id,
+                session_id=ctx.deps.conversation_id,
+                run_id=ctx.deps.run_id,
+                user_id=ctx.deps.user_id or "unauthenticated",
+                tool_name=policy.tool_name,
+                risk_level=policy.risk_level.value,
+                arguments={"reason": reason.strip()},
+                idempotency_key=idempotency_key,
+            )
+        except Exception as error:
+            if ctx.deps.tool_event_recorder is not None:
+                await ctx.deps.tool_event_recorder(
+                    policy.tool_name,
+                    "failed",
+                    0,
+                    {"policy": tool_metadata(policy.tool_name)},
+                )
+            # The idempotency key above already makes a retried
+            # create_pending_action call safe (same action_id on replay), so
+            # reflecting-and-retrying here cannot double-create the action.
+            raise _reflect_on_tool_failure(
+                ctx.deps, policy.tool_name, error, call_signature
+            ) from error
+        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
         action_id = str(pending_action["action_id"])
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -361,6 +483,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         """
 
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature()
         try:
             result = await asyncio.to_thread(inspect_existing_runtime_evidence)
         except Exception as error:
@@ -372,8 +495,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "PROJECT_RUNTIME_EVIDENCE"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_runtime_evidence", error
+                ctx.deps, "inspect_runtime_evidence", error, call_signature
             ) from error
+        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -406,6 +530,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         """Read fixed architecture groups and return structured evidence."""
 
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature()
         try:
             result = await asyncio.to_thread(
                 inspect_existing_architecture_evidence
@@ -419,8 +544,11 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "PROJECT_ARCHITECTURE_EVIDENCE"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_architecture_evidence", error
+                ctx.deps, "inspect_architecture_evidence", error, call_signature
             ) from error
+        _clear_tool_failure_note(
+            ctx.deps, "inspect_architecture_evidence", call_signature
+        )
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -459,6 +587,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         """Inspect fixed source/config evidence for one approved component."""
 
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature(component=component)
         try:
             result = await asyncio.to_thread(
                 inspect_existing_source_status,
@@ -476,7 +605,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     },
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_source_status", error
+                ctx.deps, "inspect_source_status", error, call_signature
             ) from error
 
         policy = tool_metadata("inspect_source_status")
@@ -521,6 +650,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        _clear_tool_failure_note(ctx.deps, "inspect_source_status", call_signature)
         return {
             **result,
             "policy": policy,
@@ -537,6 +667,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         """Inspect one authorized immutable original source by source ID."""
 
         started_at = time.perf_counter()
+        call_signature = _tool_call_signature(source_id=source_id)
         try:
             result = await inspect_existing_source_of_truth(
                 source_id,
@@ -551,7 +682,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     {"scope": "AUTHORIZED_MY_FILES_SOURCE"},
                 )
             raise _reflect_on_tool_failure(
-                ctx.deps, "inspect_source_of_truth", error
+                ctx.deps, "inspect_source_of_truth", error, call_signature
             ) from error
 
         policy = tool_metadata("inspect_source_of_truth")
@@ -604,6 +735,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        _clear_tool_failure_note(ctx.deps, "inspect_source_of_truth", call_signature)
         return {
             **result,
             "policy": policy,
