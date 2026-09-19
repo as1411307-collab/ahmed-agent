@@ -66,6 +66,12 @@ inspect_runtime_evidence before answering. It is read-only runtime evidence;
 never publish, deploy, execute a deployment command, or claim that a deployment
 occurred based only on this tool.
 
+When the user's question depends on a specific vendor, product, API, or
+service, run web_search in DEEP mode and include explicit official-domain
+terms for that vendor (for example "official documentation", "official site",
+or the vendor's domain name) so the sources are the official pages rather
+than blogs, forums, or social media.
+
 For a request to inspect the full Foundation or architecture continuity, call
 inspect_architecture_evidence. Review every returned group, distinguish
 implementation, wiring, and test-file evidence, and report each status. Never

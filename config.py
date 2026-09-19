@@ -4,8 +4,8 @@ import os
 
 
 AHMED_PRIMARY_MODEL = (
-    os.environ.get("AHMED_PRIMARY_MODEL", "gemini-flash-lite-latest").strip()
-    or "gemini-flash-lite-latest"
+    os.environ.get("AHMED_PRIMARY_MODEL", "gemini-flash-latest").strip()
+    or "gemini-flash-latest"
 )
 AHMED_OPENAI_MODEL = (
     os.environ.get("AHMED_OPENAI_MODEL", "gpt-5.6-terra").strip()
