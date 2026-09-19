@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from config import AHMED_OPENAI_MODEL
-from semantic_evaluation import expected_source_matches_identities
+from semantic_evaluation import cited_external_identities, expected_source_matches_identities
 
 
 REVIEW_RUBRIC_VERSION = "semantic-review-rubric-v1"
@@ -264,24 +264,13 @@ def build_independent_review_document(
             [
                 *[str(value) for value in trace.get("citations", [])],
                 *[str(value) for value in trace.get("sources", [])],
-                # Only source_identity is scanned here, never url/title: those are
-                # freeform text from the external page itself, so matching on them
-                # would let an untrusted search result upgrade groundedness merely
-                # by containing an expected_sources phrase. source_identity is a
-                # controlled label our own code assigns (e.g. "external_openai_official"),
-                # so it carries the same trust guarantee as citations/sources.
-                *[
-                    str(item.get("source_identity") or "")
-                    for item in trace.get("external_evidence_provenance", [])
-                    if isinstance(item, dict)
-                ],
             ]
         ).casefold()
-        observed_identities = {
-            str(item.get("source_identity") or "")
-            for item in trace.get("external_evidence_provenance", [])
-            if isinstance(item, dict)
-        }
+        # Bind to only the provenance records the answer actually cites, not
+        # everything a search retrieved: a search can surface an official
+        # source the model never quoted, and an unrelated citation must not
+        # inherit that unused record's identity.
+        observed_identities = cited_external_identities(trace)
         bound_aa_rc_026_provenance = (
             case.get("case_id") == "AA-RC-026"
             and trace.get("evidence_preconditions", {}).get("status") == "READY"
@@ -296,7 +285,7 @@ def build_independent_review_document(
                 and item.get("verification_status") == "UNVERIFIED_EXTERNAL"
                 for item in trace.get("external_evidence_provenance", [])
             )
-            and bool(trace.get("citations") or trace.get("sources"))
+            and "external_openai_official" in observed_identities
         )
         if bound_aa_rc_026_provenance:
             deterministic_groundedness = "PASS"

@@ -496,6 +496,48 @@ class SemanticEvaluationTests(unittest.TestCase):
         result = evaluate_case(contract_case=contract_case, trace=trace)
         self.assertEqual(result["dimensions"]["groundedness"]["status"], "PASS")
 
+    def test_aa_rc_015_groundedness_rejects_unused_official_provenance(self) -> None:
+        # A search can retrieve an official OpenAI page without the answer
+        # ever citing it -- external_evidence_provenance records everything
+        # retrieved, not everything used. Groundedness must not PASS just
+        # because an unrelated citation coexists with an unused official
+        # record in the same trace.
+        contract_case = next(
+            case for case in self.contract["cases"] if case["case_id"] == "AA-RC-015"
+        )
+        trace = {
+            "case_id": "AA-RC-015",
+            "run_id": "aa-rc-015-unbound-run",
+            "execution_status": "EXECUTED",
+            "provider": "gemini",
+            "model": "gemini-test",
+            "tool_calls": [{"name": "web_search", "status": "success"}],
+            "citations": ["https://example.test/unrelated-blog-post"],
+            "sources": ["https://example.test/unrelated-blog-post"],
+            "external_evidence_provenance": [
+                {
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "source_identity": "external_openai_official",
+                    "verification_status": "UNVERIFIED_EXTERNAL",
+                }
+            ],
+            "output": {"answer": "Some unrelated claim with a citation."},
+        }
+        result = evaluate_case(contract_case=contract_case, trace=trace)
+        self.assertEqual(result["dimensions"]["groundedness"]["status"], "REVIEW_REQUIRED")
+
+    def test_cited_external_identities_binds_by_index_marker_and_url(self) -> None:
+        trace = {
+            "citations": ["[2]"],
+            "sources": ["https://official.example/openai-doc"],
+            "external_evidence_provenance": [
+                {"url": "https://unused.example/one", "source_identity": "external_web_search"},
+                {"url": "https://official.example/openai-doc", "source_identity": "external_openai_official"},
+            ],
+        }
+        identities = semantic_evaluation.cited_external_identities(trace)
+        self.assertEqual(identities, {"external_openai_official"})
+
     def test_generic_web_expected_source_accepts_any_external_identity(self) -> None:
         # A generic expected-source phrase like "current web sources" should
         # not require the vendor-specific OpenAI identity -- any classified

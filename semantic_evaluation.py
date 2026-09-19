@@ -530,6 +530,51 @@ def expected_source_matches_identities(expected_source: str, identities: set[str
     )
 
 
+_CITATION_INDEX_RE = re.compile(r"^\[(\d+)\]$")
+
+
+def cited_external_identities(trace: dict[str, Any]) -> set[str]:
+    """Identities of only the provenance records the answer actually cites.
+
+    ``external_evidence_provenance`` records everything a search *retrieved*,
+    which is not the same as what the answer *used*: a search can surface an
+    official source the model never quoted. A citation/source binds to a
+    provenance record either by a "[N]" 1-indexed marker (this dataset's
+    format) or by matching URL, so an unrelated or absent citation can never
+    inherit an unused record's identity.
+    """
+
+    used = {
+        str(value)
+        for value in [*trace.get("citations", []), *trace.get("sources", [])]
+        if isinstance(value, str)
+    }
+    provenance = [
+        item
+        for item in trace.get("external_evidence_provenance", [])
+        if isinstance(item, dict)
+    ]
+    identities: set[str] = set()
+    for marker in used:
+        match = _CITATION_INDEX_RE.match(marker.strip())
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(provenance):
+                identity = provenance[index].get("source_identity")
+                if identity:
+                    identities.add(str(identity))
+    provenance_by_url = {
+        str(item["url"]): item.get("source_identity")
+        for item in provenance
+        if item.get("url")
+    }
+    for marker in used:
+        identity = provenance_by_url.get(marker)
+        if identity:
+            identities.add(str(identity))
+    return identities
+
+
 def _deterministic_groundedness(
     reference: dict[str, Any],
     trace: dict[str, Any],
@@ -537,11 +582,7 @@ def _deterministic_groundedness(
     expected_sources = reference["groundedness"]["expected_sources"]
     citations = trace.get("citations", [])
     sources = trace.get("sources", [])
-    observed_identities = {
-        str(item.get("source_identity") or "")
-        for item in trace.get("external_evidence_provenance", [])
-        if isinstance(item, dict)
-    }
+    observed_identities = cited_external_identities(trace)
     if reference.get("case_id") == "AA-RC-026":
         project_provenance = [
             item
@@ -556,7 +597,11 @@ def _deterministic_groundedness(
             and item.get("source_identity") == "external_openai_official"
             and item.get("verification_status") == "UNVERIFIED_EXTERNAL"
         ]
-        has_bound_citations = bool(citations or sources)
+        # A retrieved official-OpenAI record is not the same as a *cited* one:
+        # require the answer to actually reference that identity, not merely
+        # cite something else while an unrelated official result sat unused
+        # in provenance.
+        has_bound_citations = "external_openai_official" in observed_identities
         if (
             trace.get("evidence_preconditions", {}).get("status") == "READY"
             and project_provenance
