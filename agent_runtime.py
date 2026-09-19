@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import Field
-from pydantic_ai import Agent, RunContext, UsageLimits
+from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.models import Model
@@ -80,6 +80,47 @@ from source_of_truth import (
 from source_status import inspect_source_status as inspect_existing_source_status
 
 
+def _reflect_on_tool_failure(
+    deps: AgentDeps,
+    tool_name: str,
+    error: BaseException,
+) -> ModelRetry:
+    """Turn a tool failure into a retry prompt carrying this run's failure memory.
+
+    A bare re-raise lets the model see only the latest error with no memory of
+    what it already tried; PydanticAI's own multi-step tool loop means the
+    model can just repeat the identical failing call forever. Recording each
+    failure in ``deps.tool_failure_notes`` (mutated in place, same pattern as
+    ``evidence_envelopes``) and naming the attempt count in the retry message
+    is a minimal Reflexion-style nudge: the model is asked to reason about why
+    it failed before trying again, and is told explicitly once it has already
+    failed more than once in this same turn.
+    """
+
+    reason = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+    prior_attempts = 0
+    if deps.tool_failure_notes is not None:
+        prior_attempts = sum(
+            1 for note in deps.tool_failure_notes if note.get("tool") == tool_name
+        )
+        deps.tool_failure_notes.append(
+            {"tool": tool_name, "reason": reason, "attempt": prior_attempts + 1}
+        )
+    attempt_number = prior_attempts + 1
+    if attempt_number == 1:
+        return ModelRetry(
+            f"The `{tool_name}` call failed: {reason}. Before retrying, briefly "
+            "state (in one sentence) why this likely failed, then either retry "
+            "with adjusted arguments or use a different tool."
+        )
+    return ModelRetry(
+        f"The `{tool_name}` call failed again ({attempt_number} times this turn): "
+        f"{reason}. Do not repeat the same call unchanged -- either try clearly "
+        "different arguments, use a different tool, or abstain and tell the user "
+        "honestly that this capability is not working right now."
+    )
+
+
 def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[AgentDeps, str]:
     async def web_search(
         ctx: RunContext[AgentDeps],
@@ -94,7 +135,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 mode=mode,
                 max_results=max_results,
             )
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "web_search",
@@ -102,7 +143,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"mode": mode},
                 )
-            raise
+            raise _reflect_on_tool_failure(ctx.deps, "web_search", error) from error
 
         safe_metadata: dict[str, Any] = {"mode": mode}
         if isinstance(result, dict):
@@ -154,7 +195,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 intent=intent,
                 max_results=max_results,
             )
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "academic_search",
@@ -162,7 +203,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"intent": intent, "scope": "WEB"},
                 )
-            raise
+            raise _reflect_on_tool_failure(ctx.deps, "academic_search", error) from error
 
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -209,7 +250,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 issue_number=issue_number,
                 max_results=max_results,
             )
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "github_search",
@@ -217,7 +258,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"intent": intent, "scope": "WEB"},
                 )
-            raise
+            raise _reflect_on_tool_failure(ctx.deps, "github_search", error) from error
 
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -244,7 +285,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         started_at = time.perf_counter()
         try:
             result = await existing_my_files_search(query=query, top_k=top_k)
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "search_my_files",
@@ -252,7 +293,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "MY_FILES"},
                 )
-            raise
+            raise _reflect_on_tool_failure(ctx.deps, "search_my_files", error) from error
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
                 "search_my_files",
@@ -322,7 +363,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         started_at = time.perf_counter()
         try:
             result = await asyncio.to_thread(inspect_existing_runtime_evidence)
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_runtime_evidence",
@@ -330,7 +371,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "PROJECT_RUNTIME_EVIDENCE"},
                 )
-            raise
+            raise _reflect_on_tool_failure(
+                ctx.deps, "inspect_runtime_evidence", error
+            ) from error
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -367,7 +410,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             result = await asyncio.to_thread(
                 inspect_existing_architecture_evidence
             )
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_architecture_evidence",
@@ -375,7 +418,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "PROJECT_ARCHITECTURE_EVIDENCE"},
                 )
-            raise
+            raise _reflect_on_tool_failure(
+                ctx.deps, "inspect_architecture_evidence", error
+            ) from error
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -419,7 +464,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 inspect_existing_source_status,
                 component,
             )
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_source_status",
@@ -430,7 +475,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                         "component": component,
                     },
                 )
-            raise
+            raise _reflect_on_tool_failure(
+                ctx.deps, "inspect_source_status", error
+            ) from error
 
         policy = tool_metadata("inspect_source_status")
         safe_metadata = {
@@ -495,7 +542,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 source_id,
                 owner_principal_id=ctx.deps.user_id,
             )
-        except Exception:
+        except Exception as error:
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_source_of_truth",
@@ -503,7 +550,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "AUTHORIZED_MY_FILES_SOURCE"},
                 )
-            raise
+            raise _reflect_on_tool_failure(
+                ctx.deps, "inspect_source_of_truth", error
+            ) from error
 
         policy = tool_metadata("inspect_source_of_truth")
         evidence_items = [
@@ -709,6 +758,7 @@ async def run_ahmed(
             evidence_envelopes: list[dict[str, Any]] = list(
                 preflight_context.evidence_envelopes
             )
+            tool_failure_notes: list[dict[str, Any]] = []
             result = await agent.run(
                 model_message,
                 message_history=message_history,
@@ -719,6 +769,7 @@ async def run_ahmed(
                     scope=scope,
                     tool_event_recorder=tool_event_recorder,
                     evidence_envelopes=evidence_envelopes,
+                    tool_failure_notes=tool_failure_notes,
                 ),
                 conversation_id=conversation_id,
                 run_id=run_id,

@@ -140,6 +140,7 @@ class AgentDeps:
         Callable[[str, str, int, dict[str, Any] | None], Awaitable[None]] | None
     ) = None
     evidence_envelopes: list[dict[str, Any]] | None = None
+    tool_failure_notes: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
