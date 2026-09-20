@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
 from pydantic_ai import ModelRetry
 
 from agent_consts import AgentDeps
 from agent_runtime import (
+    _InFlightCall,
     _academic_search_should_reflect,
     _clear_tool_failure_note,
     _mark_call_active,
@@ -275,6 +277,66 @@ class InFlightCallTrackingTests(unittest.TestCase):
         failed_last = run(fail_first=False)
         self.assertEqual(len(failed_last), 1)
         self.assertEqual(failed_last[0]["attempt"], 1)
+
+
+class InFlightCallClassTests(unittest.IsolatedAsyncioTestCase):
+    def test_done_is_idempotent_and_matches_the_module_functions(self) -> None:
+        deps = AgentDeps(tool_calls_in_flight={})
+        sig = _tool_call_signature(query="q")
+        call = _InFlightCall(deps, "web_search", sig)
+        self.assertFalse(call.done())
+        # A second call to .done() must be a harmless no-op, never a second
+        # real decrement -- exactly what lets normal-path code call .done()
+        # once for its concurrent flag while ensure_retired() in a finally
+        # block stays safe to call unconditionally afterwards.
+        self.assertFalse(call.done())
+        self.assertEqual(deps.tool_calls_in_flight, {})
+
+    def test_ensure_retired_is_a_no_op_once_done_already_ran(self) -> None:
+        deps = AgentDeps(tool_calls_in_flight={})
+        sig = _tool_call_signature(query="q")
+        other_sig = _tool_call_signature(query="other")
+        call = _InFlightCall(deps, "web_search", sig)
+        call.done()
+        # A concurrent, unrelated call must still see no sibling after the
+        # first call's normal completion + ensure_retired() sequence.
+        call.ensure_retired()
+        sibling = _InFlightCall(deps, "web_search", other_sig)
+        self.assertFalse(sibling.done())
+
+    async def test_cancellation_before_done_still_retires_via_ensure_retired(
+        self,
+    ) -> None:
+        # This is the exact bug Codex flagged: PydanticAI's tool_timeout
+        # cancels a tool coroutine via CancelledError (a BaseException),
+        # which bypasses `except Exception` and would skip a bare
+        # _mark_call_done() call sited only in normal try/except branches --
+        # permanently leaking an in-flight slot. The fix wraps the call body
+        # in `finally: call.ensure_retired()`, which must fire even when the
+        # coroutine is cancelled before reaching its own `.done()` call.
+        deps = AgentDeps(tool_calls_in_flight={})
+        sig = _tool_call_signature(query="q")
+
+        async def cancellable_call() -> None:
+            call = _InFlightCall(deps, "web_search", sig)
+            try:
+                await asyncio.Event().wait()  # never resolves on its own
+                call.done()  # pragma: no cover -- unreachable once cancelled
+            finally:
+                call.ensure_retired()
+
+        task = asyncio.ensure_future(cancellable_call())
+        await asyncio.sleep(0)  # let it reach the await and register active
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        # The slot must not have leaked: a fresh sequential call for the
+        # identical key must see no sibling, exactly as if the timed-out
+        # call had never happened.
+        retry = _InFlightCall(deps, "web_search", sig)
+        self.assertFalse(retry.done())
+        self.assertEqual(deps.tool_calls_in_flight, {})
 
 
 class AcademicSearchShouldReflectTests(unittest.TestCase):

@@ -151,12 +151,11 @@ def _mark_call_active(deps: AgentDeps, tool_name: str, call_signature: str) -> N
 def _mark_call_done(deps: AgentDeps, tool_name: str, call_signature: str) -> bool:
     """Retire one in-flight invocation; report whether a sibling is still active.
 
-    Must be called exactly once per invocation, at its single completion
-    point (the except branch, or the point where success/failure is known on
-    the normal path -- never both). Returns True if another call with the
-    identical (tool, call_signature) key was still active at that moment --
-    the signal ``_reflect_on_tool_failure``/``_clear_tool_failure_note`` use
-    to skip mutating shared history rather than race a still-pending sibling.
+    Must be called at most once per invocation (prefer ``_InFlightCall``,
+    which enforces that). Returns True if another call with the identical
+    (tool, call_signature) key was still active at that moment -- the signal
+    ``_reflect_on_tool_failure``/``_clear_tool_failure_note`` use to skip
+    mutating shared history rather than race a still-pending sibling.
     """
 
     if deps.tool_calls_in_flight is None:
@@ -169,6 +168,48 @@ def _mark_call_done(deps: AgentDeps, tool_name: str, call_signature: str) -> boo
     else:
         deps.tool_calls_in_flight.pop(key, None)
     return had_concurrent_sibling
+
+
+class _InFlightCall:
+    """One tool invocation's in-flight registration, retired exactly once --
+    including on cancellation.
+
+    PydanticAI's ``tool_timeout`` wraps each tool call in ``anyio.fail_after``,
+    which cancels the coroutine via ``CancelledError`` when it overruns: a
+    ``BaseException`` that bypasses ``except Exception``, so a bare
+    ``_mark_call_done()`` sited only inside a function's normal try/except
+    branches never runs on timeout. That would leak a stale in-flight count
+    that misclassifies every later sequential call to this same key as
+    concurrent for the rest of the run -- exactly the bug this class exists
+    to rule out.
+
+    Call ``.done()`` at each of a call's normal completion points (its
+    return value is what ``_reflect_on_tool_failure``/
+    ``_clear_tool_failure_note`` need, and it must be the *last* thing before
+    any further ``await`` -- calling it early, before a trailing await such
+    as the success-path event recorder, reintroduces the exact ordering bug
+    this class also rules out: a still-running call could be treated as
+    already resolved). Wrap the whole call body in
+    ``try: ... finally: call.ensure_retired()`` so cancellation, or any other
+    path that skips ``.done()``, still releases the slot exactly once.
+    """
+
+    def __init__(self, deps: AgentDeps, tool_name: str, call_signature: str) -> None:
+        self._deps = deps
+        self._tool_name = tool_name
+        self._call_signature = call_signature
+        self._retired = False
+        _mark_call_active(deps, tool_name, call_signature)
+
+    def done(self) -> bool:
+        if self._retired:
+            return False
+        self._retired = True
+        return _mark_call_done(self._deps, self._tool_name, self._call_signature)
+
+    def ensure_retired(self) -> None:
+        if not self._retired:
+            self.done()
 
 
 def _reflect_on_tool_failure(
@@ -280,78 +321,81 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         call_signature = _tool_call_signature(
             query=query.strip(), mode=mode, max_results=max_results
         )
-        _mark_call_active(ctx.deps, "web_search", call_signature)
+        call = _InFlightCall(ctx.deps, "web_search", call_signature)
         try:
-            result = await existing_web_search(
-                query=query.strip(),
-                mode=mode,
-                max_results=max_results,
-            )
-        except Exception as error:
+            try:
+                result = await existing_web_search(
+                    query=query.strip(),
+                    mode=mode,
+                    max_results=max_results,
+                )
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "web_search",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"mode": mode},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "web_search",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            safe_metadata: dict[str, Any] = {"mode": mode}
+            if isinstance(result, dict):
+                for key in (
+                    "search_calls",
+                    "extract_calls",
+                    "credits_used",
+                    "urls_extracted",
+                    "candidate_count",
+                    "deduplicated_count",
+                    "failed_calls",
+                ):
+                    value = result.get(key)
+                    if isinstance(value, (int, float)):
+                        safe_metadata[key] = value
+            safe_metadata["policy"] = tool_metadata("web_search")
+            ok = result.get("ok", True) if isinstance(result, dict) else True
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "web_search",
-                    "failed",
+                    "success" if ok else "failed",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"mode": mode},
+                    safe_metadata,
                 )
-            concurrent = _mark_call_done(ctx.deps, "web_search", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "web_search",
-                type(error).__name__,
-                call_signature,
-                concurrent=concurrent,
-            ) from error
-
-        safe_metadata: dict[str, Any] = {"mode": mode}
-        if isinstance(result, dict):
-            for key in (
-                "search_calls",
-                "extract_calls",
-                "credits_used",
-                "urls_extracted",
-                "candidate_count",
-                "deduplicated_count",
-                "failed_calls",
-            ):
-                value = result.get(key)
-                if isinstance(value, (int, float)):
-                    safe_metadata[key] = value
-        safe_metadata["policy"] = tool_metadata("web_search")
-        ok = result.get("ok", True) if isinstance(result, dict) else True
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "web_search",
-                "success" if ok else "failed",
-                int((time.perf_counter() - started_at) * 1000),
-                safe_metadata,
+            if not ok:
+                # A result the tool itself reports as unsuccessful (e.g. the
+                # search provider is unconfigured) is a real failure the model
+                # must not silently accept and move on from -- route it through
+                # the same reflect-and-retry path as a raised exception. The
+                # "error" field here is always one of skill_tools.py's own
+                # short, hardcoded messages, never raw provider/exception text.
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "web_search",
+                    str(result.get("error") or "unsuccessful_result"),
+                    call_signature,
+                    concurrent=concurrent,
+                )
+            concurrent = call.done()
+            _clear_tool_failure_note(
+                ctx.deps, "web_search", call_signature, concurrent=concurrent
             )
-        if not ok:
-            # A result the tool itself reports as unsuccessful (e.g. the
-            # search provider is unconfigured) is a real failure the model
-            # must not silently accept and move on from -- route it through
-            # the same reflect-and-retry path as a raised exception. The
-            # "error" field here is always one of skill_tools.py's own
-            # short, hardcoded messages, never raw provider/exception text.
-            concurrent = _mark_call_done(ctx.deps, "web_search", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "web_search",
-                str(result.get("error") or "unsuccessful_result"),
-                call_signature,
-                concurrent=concurrent,
-            )
-        concurrent = _mark_call_done(ctx.deps, "web_search", call_signature)
-        _clear_tool_failure_note(
-            ctx.deps, "web_search", call_signature, concurrent=concurrent
-        )
-        if isinstance(result, dict):
-            return {
-                **result,
-                "data_boundary": data_only_boundary("web_search"),
-            }
-        return result
+            if isinstance(result, dict):
+                return {
+                    **result,
+                    "data_boundary": data_only_boundary("web_search"),
+                }
+            return result
+        finally:
+            call.ensure_retired()
 
     async def academic_search(
         ctx: RunContext[AgentDeps],
@@ -371,63 +415,66 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         call_signature = _tool_call_signature(
             query=query.strip(), intent=intent, max_results=max_results
         )
-        _mark_call_active(ctx.deps, "academic_search", call_signature)
+        call = _InFlightCall(ctx.deps, "academic_search", call_signature)
         try:
-            result = await existing_academic_search(
-                query=query.strip(),
-                intent=intent,
-                max_results=max_results,
-            )
-        except Exception as error:
+            try:
+                result = await existing_academic_search(
+                    query=query.strip(),
+                    intent=intent,
+                    max_results=max_results,
+                )
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "academic_search",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"intent": intent, "scope": "WEB"},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "academic_search",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            ok = result.get("ok", True)
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "academic_search",
-                    "failed",
+                    "success" if ok else "failed",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"intent": intent, "scope": "WEB"},
+                    {
+                        "intent": intent,
+                        "scope": "WEB",
+                        "result_count": len(result.get("results", [])),
+                        "providers_used": result.get("providers_used", []),
+                    },
                 )
-            concurrent = _mark_call_done(ctx.deps, "academic_search", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "academic_search",
-                type(error).__name__,
-                call_signature,
-                concurrent=concurrent,
-            ) from error
-
-        ok = result.get("ok", True)
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "academic_search",
-                "success" if ok else "failed",
-                int((time.perf_counter() - started_at) * 1000),
-                {
-                    "intent": intent,
-                    "scope": "WEB",
-                    "result_count": len(result.get("results", [])),
-                    "providers_used": result.get("providers_used", []),
-                },
+            if _academic_search_should_reflect(result):
+                # result["error"] here is always one of the four bounded
+                # validation codes checked in _academic_search_should_reflect,
+                # never raw provider text.
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "academic_search",
+                    str(result.get("error") or "unsuccessful_result"),
+                    call_signature,
+                    concurrent=concurrent,
+                )
+            concurrent = call.done()
+            _clear_tool_failure_note(
+                ctx.deps, "academic_search", call_signature, concurrent=concurrent
             )
-        if _academic_search_should_reflect(result):
-            # result["error"] here is always one of the four bounded
-            # validation codes checked in _academic_search_should_reflect,
-            # never raw provider text.
-            concurrent = _mark_call_done(ctx.deps, "academic_search", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "academic_search",
-                str(result.get("error") or "unsuccessful_result"),
-                call_signature,
-                concurrent=concurrent,
-            )
-        concurrent = _mark_call_done(ctx.deps, "academic_search", call_signature)
-        _clear_tool_failure_note(
-            ctx.deps, "academic_search", call_signature, concurrent=concurrent
-        )
-        return {
-            **result,
-            "data_boundary": data_only_boundary("academic_external"),
-        }
+            return {
+                **result,
+                "data_boundary": data_only_boundary("academic_external"),
+            }
+        finally:
+            call.ensure_retired()
 
     async def github_search(
         ctx: RunContext[AgentDeps],
@@ -456,65 +503,68 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             issue_number=issue_number,
             max_results=max_results,
         )
-        _mark_call_active(ctx.deps, "github_search", call_signature)
+        call = _InFlightCall(ctx.deps, "github_search", call_signature)
         try:
-            result = await existing_github_search(
-                query=query.strip(),
-                intent=intent,
-                owner=owner.strip() if owner else None,
-                repo=repo.strip() if repo else None,
-                issue_number=issue_number,
-                max_results=max_results,
-            )
-        except Exception as error:
+            try:
+                result = await existing_github_search(
+                    query=query.strip(),
+                    intent=intent,
+                    owner=owner.strip() if owner else None,
+                    repo=repo.strip() if repo else None,
+                    issue_number=issue_number,
+                    max_results=max_results,
+                )
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "github_search",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"intent": intent, "scope": "WEB"},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "github_search",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            ok = result.get("ok", True)
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "github_search",
-                    "failed",
+                    "success" if ok else "failed",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"intent": intent, "scope": "WEB"},
+                    {
+                        "intent": intent,
+                        "scope": "WEB",
+                        "result_count": len(result.get("results", [])),
+                        "providers_used": result.get("providers_used", []),
+                    },
                 )
-            concurrent = _mark_call_done(ctx.deps, "github_search", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "github_search",
-                type(error).__name__,
-                call_signature,
-                concurrent=concurrent,
-            ) from error
-
-        ok = result.get("ok", True)
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "github_search",
-                "success" if ok else "failed",
-                int((time.perf_counter() - started_at) * 1000),
-                {
-                    "intent": intent,
-                    "scope": "WEB",
-                    "result_count": len(result.get("results", [])),
-                    "providers_used": result.get("providers_used", []),
-                },
+            if not ok:
+                # result["error"] here is always one of github_search.py's own
+                # short machine-readable codes, never raw provider text.
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "github_search",
+                    str(result.get("error") or "unsuccessful_result"),
+                    call_signature,
+                    concurrent=concurrent,
+                )
+            concurrent = call.done()
+            _clear_tool_failure_note(
+                ctx.deps, "github_search", call_signature, concurrent=concurrent
             )
-        if not ok:
-            # result["error"] here is always one of github_search.py's own
-            # short machine-readable codes, never raw provider text.
-            concurrent = _mark_call_done(ctx.deps, "github_search", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "github_search",
-                str(result.get("error") or "unsuccessful_result"),
-                call_signature,
-                concurrent=concurrent,
-            )
-        concurrent = _mark_call_done(ctx.deps, "github_search", call_signature)
-        _clear_tool_failure_note(
-            ctx.deps, "github_search", call_signature, concurrent=concurrent
-        )
-        return {
-            **result,
-            "data_boundary": data_only_boundary("github_public_api"),
-        }
+            return {
+                **result,
+                "data_boundary": data_only_boundary("github_public_api"),
+            }
+        finally:
+            call.ensure_retired()
 
     async def search_my_files(
         ctx: RunContext[AgentDeps],
@@ -523,54 +573,57 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
     ) -> dict[str, object]:
         started_at = time.perf_counter()
         call_signature = _tool_call_signature(query=query, top_k=top_k)
-        _mark_call_active(ctx.deps, "search_my_files", call_signature)
+        call = _InFlightCall(ctx.deps, "search_my_files", call_signature)
         try:
-            result = await existing_my_files_search(query=query, top_k=top_k)
-        except Exception as error:
+            try:
+                result = await existing_my_files_search(query=query, top_k=top_k)
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "search_my_files",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"scope": "MY_FILES"},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "search_my_files",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+            ok = result.get("ok", True)
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "search_my_files",
-                    "failed",
+                    "success" if ok else "failed",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"scope": "MY_FILES"},
+                    {
+                        "scope": "MY_FILES",
+                        "result_count": len(result.get("results", [])),
+                        "policy": tool_metadata("search_my_files"),
+                    },
                 )
-            concurrent = _mark_call_done(ctx.deps, "search_my_files", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "search_my_files",
-                type(error).__name__,
-                call_signature,
-                concurrent=concurrent,
-            ) from error
-        ok = result.get("ok", True)
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "search_my_files",
-                "success" if ok else "failed",
-                int((time.perf_counter() - started_at) * 1000),
-                {
-                    "scope": "MY_FILES",
-                    "result_count": len(result.get("results", [])),
-                    "policy": tool_metadata("search_my_files"),
-                },
+            if not ok:
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "search_my_files",
+                    str(result.get("error") or "unsuccessful_result"),
+                    call_signature,
+                    concurrent=concurrent,
+                )
+            concurrent = call.done()
+            _clear_tool_failure_note(
+                ctx.deps, "search_my_files", call_signature, concurrent=concurrent
             )
-        if not ok:
-            concurrent = _mark_call_done(ctx.deps, "search_my_files", call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "search_my_files",
-                str(result.get("error") or "unsuccessful_result"),
-                call_signature,
-                concurrent=concurrent,
-            )
-        concurrent = _mark_call_done(ctx.deps, "search_my_files", call_signature)
-        _clear_tool_failure_note(
-            ctx.deps, "search_my_files", call_signature, concurrent=concurrent
-        )
-        return {
-            **result,
-            "data_boundary": data_only_boundary("uploaded_files"),
-        }
+            return {
+                **result,
+                "data_boundary": data_only_boundary("uploaded_files"),
+            }
+        finally:
+            call.ensure_retired()
 
     async def test_sensitive_action(
         ctx: RunContext[AgentDeps],
@@ -578,86 +631,89 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
     ) -> dict[str, object]:
         policy = get_tool_policy("test_sensitive_action")
         call_signature = _tool_call_signature(reason=reason.strip())
-        _mark_call_active(ctx.deps, policy.tool_name, call_signature)
+        call = _InFlightCall(ctx.deps, policy.tool_name, call_signature)
         try:
-            if not ctx.deps.conversation_id or not ctx.deps.run_id:
-                raise RuntimeError(
-                    "Sensitive actions require a persisted session and run."
+            try:
+                if not ctx.deps.conversation_id or not ctx.deps.run_id:
+                    raise RuntimeError(
+                        "Sensitive actions require a persisted session and run."
+                    )
+                action_id = str(uuid4())
+                idempotency_key = hashlib.sha256(
+                    f"{ctx.deps.run_id}:test_sensitive_action:{reason.strip()}".encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                pending_action = await create_pending_action(
+                    action_id=action_id,
+                    session_id=ctx.deps.conversation_id,
+                    run_id=ctx.deps.run_id,
+                    user_id=ctx.deps.user_id or "unauthenticated",
+                    tool_name=policy.tool_name,
+                    risk_level=policy.risk_level.value,
+                    arguments={"reason": reason.strip()},
+                    idempotency_key=idempotency_key,
                 )
-            action_id = str(uuid4())
-            idempotency_key = hashlib.sha256(
-                f"{ctx.deps.run_id}:test_sensitive_action:{reason.strip()}".encode(
-                    "utf-8"
-                )
-            ).hexdigest()
-            pending_action = await create_pending_action(
-                action_id=action_id,
-                session_id=ctx.deps.conversation_id,
-                run_id=ctx.deps.run_id,
-                user_id=ctx.deps.user_id or "unauthenticated",
-                tool_name=policy.tool_name,
-                risk_level=policy.risk_level.value,
-                arguments={"reason": reason.strip()},
-                idempotency_key=idempotency_key,
-            )
-        except Exception as error:
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        policy.tool_name,
+                        "failed",
+                        0,
+                        {"policy": tool_metadata(policy.tool_name)},
+                    )
+                # The idempotency key is derived from the free-form `reason`
+                # text, so it only protects a retry that resubmits that text
+                # unchanged -- the generic "retry with different arguments"
+                # advice would defeat that guarantee (a paraphrased reason is a
+                # different key, so a commit that actually succeeded server-side
+                # but looked like a failure to the client could be duplicated).
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    policy.tool_name,
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                    guidance=(
+                        "decide why this likely failed, then retry this exact "
+                        "same action with the reason text UNCHANGED -- do not "
+                        "paraphrase it, since the system uses it to safely "
+                        "detect a duplicate if the previous attempt actually "
+                        "succeeded -- or use a different tool if this one "
+                        "cannot succeed"
+                    ),
+                    escalated_guidance=(
+                        "do not change the reason text -- if the identical "
+                        "action keeps failing, tell the user honestly that this "
+                        "action cannot be completed right now"
+                    ),
+                ) from error
+            action_id = str(pending_action["action_id"])
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     policy.tool_name,
-                    "failed",
+                    "success",
                     0,
-                    {"policy": tool_metadata(policy.tool_name)},
+                    {
+                        "policy": tool_metadata(policy.tool_name),
+                        "action_id": action_id,
+                        "status": "pending_approval",
+                    },
                 )
-            # The idempotency key is derived from the free-form `reason`
-            # text, so it only protects a retry that resubmits that text
-            # unchanged -- the generic "retry with different arguments"
-            # advice would defeat that guarantee (a paraphrased reason is a
-            # different key, so a commit that actually succeeded server-side
-            # but looked like a failure to the client could be duplicated).
-            concurrent = _mark_call_done(ctx.deps, policy.tool_name, call_signature)
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                policy.tool_name,
-                type(error).__name__,
-                call_signature,
-                concurrent=concurrent,
-                guidance=(
-                    "decide why this likely failed, then retry this exact "
-                    "same action with the reason text UNCHANGED -- do not "
-                    "paraphrase it, since the system uses it to safely "
-                    "detect a duplicate if the previous attempt actually "
-                    "succeeded -- or use a different tool if this one "
-                    "cannot succeed"
-                ),
-                escalated_guidance=(
-                    "do not change the reason text -- if the identical "
-                    "action keeps failing, tell the user honestly that this "
-                    "action cannot be completed right now"
-                ),
-            ) from error
-        concurrent = _mark_call_done(ctx.deps, policy.tool_name, call_signature)
-        _clear_tool_failure_note(
-            ctx.deps, policy.tool_name, call_signature, concurrent=concurrent
-        )
-        action_id = str(pending_action["action_id"])
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                policy.tool_name,
-                "success",
-                0,
-                {
-                    "policy": tool_metadata(policy.tool_name),
-                    "action_id": action_id,
-                    "status": "pending_approval",
-                },
+            concurrent = call.done()
+            _clear_tool_failure_note(
+                ctx.deps, policy.tool_name, call_signature, concurrent=concurrent
             )
-        return {
-            "ok": False,
-            "requires_approval": True,
-            "action_id": action_id,
-            "risk_level": policy.risk_level.value,
-            "message": "Approval is required before this action can execute.",
-        }
+            return {
+                "ok": False,
+                "requires_approval": True,
+                "action_id": action_id,
+                "risk_level": policy.risk_level.value,
+                "message": "Approval is required before this action can execute.",
+            }
+        finally:
+            call.ensure_retired()
 
     async def inspect_runtime_evidence(
         ctx: RunContext[AgentDeps],
@@ -670,58 +726,60 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature()
-        _mark_call_active(ctx.deps, "inspect_runtime_evidence", call_signature)
+        call = _InFlightCall(ctx.deps, "inspect_runtime_evidence", call_signature)
         try:
-            result = await asyncio.to_thread(inspect_existing_runtime_evidence)
-        except Exception as error:
+            try:
+                result = await asyncio.to_thread(inspect_existing_runtime_evidence)
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "inspect_runtime_evidence",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"scope": "PROJECT_RUNTIME_EVIDENCE"},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "inspect_runtime_evidence",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            policy = tool_metadata("inspect_runtime_evidence")
+            safe_metadata = {
+                "scope": "PROJECT_RUNTIME_EVIDENCE",
+                "status": result.get("status"),
+                "evidence_files": result.get("evidence_files", []),
+                "claim_statuses": {
+                    name: claim.get("status")
+                    for name, claim in result.get("runtime_evidence", {}).items()
+                    if isinstance(claim, dict)
+                },
+                "policy": policy,
+            }
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_runtime_evidence",
-                    "failed",
+                    "success",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"scope": "PROJECT_RUNTIME_EVIDENCE"},
+                    safe_metadata,
                 )
-            concurrent = _mark_call_done(
-                ctx.deps, "inspect_runtime_evidence", call_signature
-            )
-            raise _reflect_on_tool_failure(
+            concurrent = call.done()
+            _clear_tool_failure_note(
                 ctx.deps,
                 "inspect_runtime_evidence",
-                type(error).__name__,
                 call_signature,
                 concurrent=concurrent,
-            ) from error
-        concurrent = _mark_call_done(
-            ctx.deps, "inspect_runtime_evidence", call_signature
-        )
-        _clear_tool_failure_note(
-            ctx.deps, "inspect_runtime_evidence", call_signature, concurrent=concurrent
-        )
-
-        policy = tool_metadata("inspect_runtime_evidence")
-        safe_metadata = {
-            "scope": "PROJECT_RUNTIME_EVIDENCE",
-            "status": result.get("status"),
-            "evidence_files": result.get("evidence_files", []),
-            "claim_statuses": {
-                name: claim.get("status")
-                for name, claim in result.get("runtime_evidence", {}).items()
-                if isinstance(claim, dict)
-            },
-            "policy": policy,
-        }
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "inspect_runtime_evidence",
-                "success",
-                int((time.perf_counter() - started_at) * 1000),
-                safe_metadata,
             )
-        return {
-            **result,
-            "policy": policy,
-            "data_boundary": data_only_boundary("project_runtime_evidence"),
-        }
+            return {
+                **result,
+                "policy": policy,
+                "data_boundary": data_only_boundary("project_runtime_evidence"),
+            }
+        finally:
+            call.ensure_retired()
 
     async def inspect_architecture_evidence(
         ctx: RunContext[AgentDeps],
@@ -730,65 +788,64 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature()
-        _mark_call_active(ctx.deps, "inspect_architecture_evidence", call_signature)
+        call = _InFlightCall(ctx.deps, "inspect_architecture_evidence", call_signature)
         try:
-            result = await asyncio.to_thread(
-                inspect_existing_architecture_evidence
-            )
-        except Exception as error:
+            try:
+                result = await asyncio.to_thread(
+                    inspect_existing_architecture_evidence
+                )
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "inspect_architecture_evidence",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"scope": "PROJECT_ARCHITECTURE_EVIDENCE"},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "inspect_architecture_evidence",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            policy = tool_metadata("inspect_architecture_evidence")
+            safe_metadata = {
+                "scope": "PROJECT_ARCHITECTURE_EVIDENCE",
+                "status": result.get("status"),
+                "architecture_fingerprint": result.get("architecture_fingerprint"),
+                "group_statuses": {
+                    name: group.get("status")
+                    for name, group in result.get("groups", {}).items()
+                    if isinstance(group, dict)
+                },
+                "policy": policy,
+            }
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_architecture_evidence",
-                    "failed",
+                    "success",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"scope": "PROJECT_ARCHITECTURE_EVIDENCE"},
+                    safe_metadata,
                 )
-            concurrent = _mark_call_done(
-                ctx.deps, "inspect_architecture_evidence", call_signature
-            )
-            raise _reflect_on_tool_failure(
+            concurrent = call.done()
+            _clear_tool_failure_note(
                 ctx.deps,
                 "inspect_architecture_evidence",
-                type(error).__name__,
                 call_signature,
                 concurrent=concurrent,
-            ) from error
-        concurrent = _mark_call_done(
-            ctx.deps, "inspect_architecture_evidence", call_signature
-        )
-        _clear_tool_failure_note(
-            ctx.deps,
-            "inspect_architecture_evidence",
-            call_signature,
-            concurrent=concurrent,
-        )
-
-        policy = tool_metadata("inspect_architecture_evidence")
-        safe_metadata = {
-            "scope": "PROJECT_ARCHITECTURE_EVIDENCE",
-            "status": result.get("status"),
-            "architecture_fingerprint": result.get("architecture_fingerprint"),
-            "group_statuses": {
-                name: group.get("status")
-                for name, group in result.get("groups", {}).items()
-                if isinstance(group, dict)
-            },
-            "policy": policy,
-        }
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "inspect_architecture_evidence",
-                "success",
-                int((time.perf_counter() - started_at) * 1000),
-                safe_metadata,
             )
-        return {
-            **result,
-            "policy": policy,
-            "data_boundary": data_only_boundary(
-                "project_architecture_evidence"
-            ),
-        }
+            return {
+                **result,
+                "policy": policy,
+                "data_boundary": data_only_boundary(
+                    "project_architecture_evidence"
+                ),
+            }
+        finally:
+            call.ensure_retired()
 
     async def inspect_source_status(
         ctx: RunContext[AgentDeps],
@@ -801,85 +858,86 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature(component=component)
-        _mark_call_active(ctx.deps, "inspect_source_status", call_signature)
+        call = _InFlightCall(ctx.deps, "inspect_source_status", call_signature)
         try:
-            result = await asyncio.to_thread(
-                inspect_existing_source_status,
-                component,
-            )
-        except Exception as error:
+            try:
+                result = await asyncio.to_thread(
+                    inspect_existing_source_status,
+                    component,
+                )
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "inspect_source_status",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {
+                            "scope": "PROJECT_SOURCE_STATUS_EVIDENCE",
+                            "component": component,
+                        },
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "inspect_source_status",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            policy = tool_metadata("inspect_source_status")
+            safe_metadata = {
+                "scope": "PROJECT_SOURCE_STATUS_EVIDENCE",
+                "component": component,
+                "evidence_status": result.get("evidence_status"),
+                "evidence_item_count": result.get("extracted_facts", {}).get(
+                    "evidence_item_count", 0
+                ),
+                "policy": policy,
+                "evidence_citations": result.get("evidence_citations", [])[:24],
+                "evidence_items": [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "relative_source_path",
+                            "file_sha256",
+                            "line_start",
+                            "line_end",
+                            "verification_status",
+                            "trust_classification",
+                        )
+                        if key in item
+                    }
+                    for item in result.get("evidence_items", [])[:24]
+                    if isinstance(item, dict)
+                ],
+            }
+            if ctx.deps.evidence_envelopes is not None:
+                ctx.deps.evidence_envelopes.append(
+                    {
+                        "target": result.get("target"),
+                        "evidence_status": result.get("evidence_status"),
+                        "evidence_items": result.get("evidence_items", [])[:24],
+                    }
+                )
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_source_status",
-                    "failed",
+                    "success",
                     int((time.perf_counter() - started_at) * 1000),
-                    {
-                        "scope": "PROJECT_SOURCE_STATUS_EVIDENCE",
-                        "component": component,
-                    },
+                    safe_metadata,
                 )
-            concurrent = _mark_call_done(
-                ctx.deps, "inspect_source_status", call_signature
+            concurrent = call.done()
+            _clear_tool_failure_note(
+                ctx.deps, "inspect_source_status", call_signature, concurrent=concurrent
             )
-            raise _reflect_on_tool_failure(
-                ctx.deps,
-                "inspect_source_status",
-                type(error).__name__,
-                call_signature,
-                concurrent=concurrent,
-            ) from error
-
-        policy = tool_metadata("inspect_source_status")
-        safe_metadata = {
-            "scope": "PROJECT_SOURCE_STATUS_EVIDENCE",
-            "component": component,
-            "evidence_status": result.get("evidence_status"),
-            "evidence_item_count": result.get("extracted_facts", {}).get(
-                "evidence_item_count", 0
-            ),
-            "policy": policy,
-            "evidence_citations": result.get("evidence_citations", [])[:24],
-            "evidence_items": [
-                {
-                    key: item.get(key)
-                    for key in (
-                        "relative_source_path",
-                        "file_sha256",
-                        "line_start",
-                        "line_end",
-                        "verification_status",
-                        "trust_classification",
-                    )
-                    if key in item
-                }
-                for item in result.get("evidence_items", [])[:24]
-                if isinstance(item, dict)
-            ],
-        }
-        if ctx.deps.evidence_envelopes is not None:
-            ctx.deps.evidence_envelopes.append(
-                {
-                    "target": result.get("target"),
-                    "evidence_status": result.get("evidence_status"),
-                    "evidence_items": result.get("evidence_items", [])[:24],
-                }
-            )
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "inspect_source_status",
-                "success",
-                int((time.perf_counter() - started_at) * 1000),
-                safe_metadata,
-            )
-        concurrent = _mark_call_done(ctx.deps, "inspect_source_status", call_signature)
-        _clear_tool_failure_note(
-            ctx.deps, "inspect_source_status", call_signature, concurrent=concurrent
-        )
-        return {
-            **result,
-            "policy": policy,
-            "data_boundary": data_only_boundary("project_source_status_evidence"),
-        }
+            return {
+                **result,
+                "policy": policy,
+                "data_boundary": data_only_boundary("project_source_status_evidence"),
+            }
+        finally:
+            call.ensure_retired()
 
     async def inspect_source_of_truth(
         ctx: RunContext[AgentDeps],
@@ -892,92 +950,94 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature(source_id=source_id)
-        _mark_call_active(ctx.deps, "inspect_source_of_truth", call_signature)
+        call = _InFlightCall(ctx.deps, "inspect_source_of_truth", call_signature)
         try:
-            result = await inspect_existing_source_of_truth(
-                source_id,
-                owner_principal_id=ctx.deps.user_id,
-            )
-        except Exception as error:
+            try:
+                result = await inspect_existing_source_of_truth(
+                    source_id,
+                    owner_principal_id=ctx.deps.user_id,
+                )
+            except Exception as error:
+                if ctx.deps.tool_event_recorder is not None:
+                    await ctx.deps.tool_event_recorder(
+                        "inspect_source_of_truth",
+                        "failed",
+                        int((time.perf_counter() - started_at) * 1000),
+                        {"scope": "AUTHORIZED_MY_FILES_SOURCE"},
+                    )
+                concurrent = call.done()
+                raise _reflect_on_tool_failure(
+                    ctx.deps,
+                    "inspect_source_of_truth",
+                    type(error).__name__,
+                    call_signature,
+                    concurrent=concurrent,
+                ) from error
+
+            policy = tool_metadata("inspect_source_of_truth")
+            evidence_items = [
+                item
+                for item in result.get("evidence_items", [])[:24]
+                if isinstance(item, dict)
+            ]
+            safe_metadata = {
+                "scope": "AUTHORIZED_MY_FILES_SOURCE",
+                "source_id": result.get("extracted_facts", {}).get("source_id"),
+                "source_filename": result.get("extracted_facts", {}).get(
+                    "original_filename"
+                ),
+                "evidence_status": result.get("evidence_status"),
+                "original_integrity_status": result.get("extracted_facts", {}).get(
+                    "original_integrity_status"
+                ),
+                "evidence_citations": result.get("evidence_citations", [])[:24],
+                "evidence_items": [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "relative_source_path",
+                            "file_sha256",
+                            "line_start",
+                            "line_end",
+                            "verification_status",
+                            "trust_classification",
+                        )
+                        if key in item
+                    }
+                    for item in evidence_items
+                ],
+                "policy": policy,
+            }
+            if ctx.deps.evidence_envelopes is not None:
+                ctx.deps.evidence_envelopes.append(
+                    {
+                        "target": result.get("target"),
+                        "evidence_status": result.get("evidence_status"),
+                        "source_label": result.get("source_label"),
+                        "evidence_items": evidence_items,
+                    }
+                )
             if ctx.deps.tool_event_recorder is not None:
                 await ctx.deps.tool_event_recorder(
                     "inspect_source_of_truth",
-                    "failed",
+                    "success",
                     int((time.perf_counter() - started_at) * 1000),
-                    {"scope": "AUTHORIZED_MY_FILES_SOURCE"},
+                    safe_metadata,
                 )
-            concurrent = _mark_call_done(
-                ctx.deps, "inspect_source_of_truth", call_signature
-            )
-            raise _reflect_on_tool_failure(
+            concurrent = call.done()
+            _clear_tool_failure_note(
                 ctx.deps,
                 "inspect_source_of_truth",
-                type(error).__name__,
                 call_signature,
                 concurrent=concurrent,
-            ) from error
-
-        policy = tool_metadata("inspect_source_of_truth")
-        evidence_items = [
-            item
-            for item in result.get("evidence_items", [])[:24]
-            if isinstance(item, dict)
-        ]
-        safe_metadata = {
-            "scope": "AUTHORIZED_MY_FILES_SOURCE",
-            "source_id": result.get("extracted_facts", {}).get("source_id"),
-            "source_filename": result.get("extracted_facts", {}).get(
-                "original_filename"
-            ),
-            "evidence_status": result.get("evidence_status"),
-            "original_integrity_status": result.get("extracted_facts", {}).get(
-                "original_integrity_status"
-            ),
-            "evidence_citations": result.get("evidence_citations", [])[:24],
-            "evidence_items": [
-                {
-                    key: item.get(key)
-                    for key in (
-                        "relative_source_path",
-                        "file_sha256",
-                        "line_start",
-                        "line_end",
-                        "verification_status",
-                        "trust_classification",
-                    )
-                    if key in item
-                }
-                for item in evidence_items
-            ],
-            "policy": policy,
-        }
-        if ctx.deps.evidence_envelopes is not None:
-            ctx.deps.evidence_envelopes.append(
-                {
-                    "target": result.get("target"),
-                    "evidence_status": result.get("evidence_status"),
-                    "source_label": result.get("source_label"),
-                    "evidence_items": evidence_items,
-                }
             )
-        if ctx.deps.tool_event_recorder is not None:
-            await ctx.deps.tool_event_recorder(
-                "inspect_source_of_truth",
-                "success",
-                int((time.perf_counter() - started_at) * 1000),
-                safe_metadata,
-            )
-        concurrent = _mark_call_done(
-            ctx.deps, "inspect_source_of_truth", call_signature
-        )
-        _clear_tool_failure_note(
-            ctx.deps, "inspect_source_of_truth", call_signature, concurrent=concurrent
-        )
-        return {
-            **result,
-            "policy": policy,
-            "data_boundary": data_only_boundary("authorized_my_files_source"),
-        }
+            return {
+                **result,
+                "policy": policy,
+                "data_boundary": data_only_boundary("authorized_my_files_source"),
+            }
+        finally:
+            call.ensure_retired()
 
     if scope == "WEB":
         tools = [
