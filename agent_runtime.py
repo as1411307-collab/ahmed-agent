@@ -174,10 +174,15 @@ def _reflect_on_tool_failure(
     ``deps.tool_failure_notes``. The one residual ambiguity is when the
     model dispatches two calls sharing the *identical* (tool,
     call_signature) key concurrently in the same round (not just the same
-    tool -- the exact same arguments): whichever happens to reach this
-    function or ``_clear_tool_failure_note`` last (by real, if externally
-    unpredictable, completion order) determines the final record -- an
-    ordinary last-write-wins outcome, not a corruption. An earlier attempt
+    tool -- the exact same arguments): whichever call happens to actually
+    call this function or ``_clear_tool_failure_note`` last determines the
+    final record. Every call site does this bookkeeping as the last thing
+    before it returns or raises -- after its own final `await`, including
+    the success-path event recorder -- so "last to mutate" and "last to
+    truly finish" are the same call; which of two genuinely concurrent
+    calls that is remains externally unpredictable, but the record itself
+    is always exactly what the actually-last call decided, an ordinary
+    last-write-wins outcome, not a corruption. An earlier attempt
     to make that case fully order-independent by deferring a call's outcome
     until no identical sibling was still in flight introduced worse bugs of
     its own (a deferred outcome silently lost if the deferring call was
@@ -577,7 +582,6 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "action cannot be completed right now"
                 ),
             ) from error
-        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
         action_id = str(pending_action["action_id"])
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -590,6 +594,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "status": "pending_approval",
                 },
             )
+        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
         return {
             "ok": False,
             "requires_approval": True,
@@ -625,7 +630,6 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 type(error).__name__,
                 call_signature,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -646,6 +650,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
         return {
             **result,
             "policy": policy,
@@ -677,7 +682,6 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 type(error).__name__,
                 call_signature,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_architecture_evidence", call_signature)
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -698,6 +702,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        _clear_tool_failure_note(
+            ctx.deps, "inspect_architecture_evidence", call_signature
+        )
         return {
             **result,
             "policy": policy,
