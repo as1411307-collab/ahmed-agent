@@ -141,7 +141,6 @@ class AgentDeps:
     ) = None
     evidence_envelopes: list[dict[str, Any]] | None = None
     tool_failure_notes: list[dict[str, Any]] | None = None
-    tool_calls_in_flight: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
