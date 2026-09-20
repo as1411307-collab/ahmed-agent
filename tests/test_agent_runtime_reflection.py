@@ -8,6 +8,8 @@ from agent_consts import AgentDeps
 from agent_runtime import (
     _academic_search_should_reflect,
     _clear_tool_failure_note,
+    _mark_call_active,
+    _mark_call_done,
     _reflect_on_tool_failure,
     _tool_call_signature,
 )
@@ -150,6 +152,129 @@ class ReflectOnToolFailureTests(unittest.TestCase):
             escalated_guidance="do not change the reason text",
         )
         self.assertIn("Do not change the reason text", escalated.message)
+
+    def test_concurrent_failure_never_touches_shared_history(self) -> None:
+        # concurrent=True is how a still-active identical sibling call
+        # (_mark_call_done observing it) tells this call not to race it: the
+        # shared list must be left completely untouched, and the message
+        # must still read as a plain first failure regardless of what a
+        # sibling is doing.
+        deps = AgentDeps(tool_failure_notes=[{"tool": "web_search", "key": "x", "reason": "prior", "attempt": 1}])
+        sig = _tool_call_signature(query="q")
+        retry = _reflect_on_tool_failure(
+            deps, "web_search", "ValueError", sig, concurrent=True
+        )
+        self.assertIn("Do not reply with text yet", retry.message)
+        self.assertNotIn("failed 2 times", retry.message)
+        self.assertEqual(len(deps.tool_failure_notes), 1)
+        self.assertEqual(deps.tool_failure_notes[0]["reason"], "prior")
+
+    def test_concurrent_clear_never_touches_shared_history(self) -> None:
+        deps = AgentDeps(tool_failure_notes=[])
+        sig = _tool_call_signature(query="q")
+        _reflect_on_tool_failure(deps, "web_search", "ValueError", sig)
+        _clear_tool_failure_note(deps, "web_search", sig, concurrent=True)
+        # The clear was a no-op because it was told a sibling was still
+        # in flight -- the earlier failure note must survive untouched.
+        self.assertEqual(len(deps.tool_failure_notes), 1)
+
+
+class InFlightCallTrackingTests(unittest.TestCase):
+    def test_a_solo_call_is_never_reported_as_concurrent(self) -> None:
+        deps = AgentDeps(tool_calls_in_flight={})
+        sig = _tool_call_signature(query="q")
+        _mark_call_active(deps, "web_search", sig)
+        had_sibling = _mark_call_done(deps, "web_search", sig)
+        self.assertFalse(had_sibling)
+        self.assertEqual(deps.tool_calls_in_flight, {})
+
+    def test_sequential_retries_are_never_reported_as_concurrent(self) -> None:
+        # The mainline case this whole feature targets: a call fails, fully
+        # completes, and only then does the model retry it. There must be
+        # no window where both attempts are counted as in flight together.
+        deps = AgentDeps(tool_calls_in_flight={})
+        sig = _tool_call_signature(query="q")
+        _mark_call_active(deps, "web_search", sig)
+        self.assertFalse(_mark_call_done(deps, "web_search", sig))
+        _mark_call_active(deps, "web_search", sig)
+        self.assertFalse(_mark_call_done(deps, "web_search", sig))
+
+    def test_whichever_of_two_identical_calls_finishes_last_sees_no_sibling(
+        self,
+    ) -> None:
+        # This is the exact scenario Codex flagged: two calls dispatched
+        # with the identical (tool, call_signature) key, running
+        # concurrently in the same model-response round. Whichever finishes
+        # first must be told a sibling is active (so it skips shared
+        # history); whichever finishes last must see the coast is clear --
+        # and this must hold regardless of which one that happens to be.
+        deps = AgentDeps(tool_calls_in_flight={})
+        sig = _tool_call_signature(query="dup")
+        _mark_call_active(deps, "web_search", sig)
+        _mark_call_active(deps, "web_search", sig)
+        # Order A finishes, then B.
+        self.assertTrue(_mark_call_done(deps, "web_search", sig))
+        self.assertFalse(_mark_call_done(deps, "web_search", sig))
+
+        deps2 = AgentDeps(tool_calls_in_flight={})
+        _mark_call_active(deps2, "web_search", sig)
+        _mark_call_active(deps2, "web_search", sig)
+        # Reverse completion order -- the outcome pattern is identical.
+        self.assertTrue(_mark_call_done(deps2, "web_search", sig))
+        self.assertFalse(_mark_call_done(deps2, "web_search", sig))
+
+    def test_duplicate_concurrent_calls_never_corrupt_the_note_list_either_order(
+        self,
+    ) -> None:
+        # End-to-end proof for the exact scenario Codex flagged: two calls
+        # sharing the identical (tool, call_signature) key, one failing and
+        # one succeeding, dispatched concurrently in the same round. The
+        # fix does not force a single "right" answer -- whichever outcome
+        # resolves last (no sibling left in flight) is authoritative, which
+        # is an ordinary, sanctioned last-write-wins rule. What it
+        # eliminates is the pre-fix bug: an EARLIER-resolving call's own
+        # mutation getting silently corrupted or double-read by a sibling
+        # that hadn't resolved yet. So in both orders the result must be
+        # well-formed -- exactly zero or one note, matching whichever
+        # operation actually ran last -- never two notes, never a note left
+        # over from the call that lost the race.
+        def run(fail_first: bool) -> list[dict[str, object]]:
+            deps = AgentDeps(tool_failure_notes=[], tool_calls_in_flight={})
+            sig = _tool_call_signature(query="dup")
+            _mark_call_active(deps, "web_search", sig)
+            _mark_call_active(deps, "web_search", sig)
+            if fail_first:
+                concurrent = _mark_call_done(deps, "web_search", sig)
+                _reflect_on_tool_failure(
+                    deps, "web_search", "ValueError", sig, concurrent=concurrent
+                )
+                concurrent = _mark_call_done(deps, "web_search", sig)
+                _clear_tool_failure_note(
+                    deps, "web_search", sig, concurrent=concurrent
+                )
+            else:
+                concurrent = _mark_call_done(deps, "web_search", sig)
+                _clear_tool_failure_note(
+                    deps, "web_search", sig, concurrent=concurrent
+                )
+                concurrent = _mark_call_done(deps, "web_search", sig)
+                _reflect_on_tool_failure(
+                    deps, "web_search", "ValueError", sig, concurrent=concurrent
+                )
+            return deps.tool_failure_notes
+
+        # fail_first=True: the failure resolves while its sibling is still
+        # active, so it skips the shared list untouched; the success then
+        # resolves last (alone) and its clear -- a no-op on an already-empty
+        # list -- leaves zero notes: a clean, well-formed "resolved" state.
+        self.assertEqual(run(fail_first=True), [])
+        # fail_first=False: the success resolves while its sibling is still
+        # active, so it skips clearing; the failure then resolves last
+        # (alone) and is the one that actually records itself -- exactly
+        # one note, never two, never a stale leftover from either call.
+        failed_last = run(fail_first=False)
+        self.assertEqual(len(failed_last), 1)
+        self.assertEqual(failed_last[0]["attempt"], 1)
 
 
 class AcademicSearchShouldReflectTests(unittest.TestCase):

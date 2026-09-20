@@ -132,12 +132,52 @@ _DEFAULT_ESCALATED_GUIDANCE = (
 )
 
 
+def _mark_call_active(deps: AgentDeps, tool_name: str, call_signature: str) -> None:
+    """Register one in-flight invocation of this exact (tool, call_signature).
+
+    Pairs with ``_mark_call_done``, called once each at a call's start and
+    its single completion point, so ``_reflect_on_tool_failure`` and
+    ``_clear_tool_failure_note`` can tell whether an identical call (not
+    just the same tool -- the same arguments too) is still running
+    concurrently with this one.
+    """
+
+    if deps.tool_calls_in_flight is None:
+        return
+    key = f"{tool_name}:{call_signature}"
+    deps.tool_calls_in_flight[key] = deps.tool_calls_in_flight.get(key, 0) + 1
+
+
+def _mark_call_done(deps: AgentDeps, tool_name: str, call_signature: str) -> bool:
+    """Retire one in-flight invocation; report whether a sibling is still active.
+
+    Must be called exactly once per invocation, at its single completion
+    point (the except branch, or the point where success/failure is known on
+    the normal path -- never both). Returns True if another call with the
+    identical (tool, call_signature) key was still active at that moment --
+    the signal ``_reflect_on_tool_failure``/``_clear_tool_failure_note`` use
+    to skip mutating shared history rather than race a still-pending sibling.
+    """
+
+    if deps.tool_calls_in_flight is None:
+        return False
+    key = f"{tool_name}:{call_signature}"
+    current = deps.tool_calls_in_flight.get(key, 1)
+    had_concurrent_sibling = current > 1
+    if current > 1:
+        deps.tool_calls_in_flight[key] = current - 1
+    else:
+        deps.tool_calls_in_flight.pop(key, None)
+    return had_concurrent_sibling
+
+
 def _reflect_on_tool_failure(
     deps: AgentDeps,
     tool_name: str,
     reason: str,
     call_signature: str,
     *,
+    concurrent: bool = False,
     guidance: str = _DEFAULT_RETRY_GUIDANCE,
     escalated_guidance: str = _DEFAULT_ESCALATED_GUIDANCE,
 ) -> ModelRetry:
@@ -154,18 +194,22 @@ def _reflect_on_tool_failure(
     and is told explicitly once the *exact same call* has already failed more
     than once.
 
-    The count is deliberately scoped to this one (tool, call_signature) key,
-    cleared only by that exact call's own success (see
-    ``_clear_tool_failure_note``) -- never phrased as "in a row" or otherwise
-    implying nothing else happened meanwhile. PydanticAI's default 'graceful'
-    end strategy runs function tools from the same model-response round
-    concurrently, so any cross-call bookkeeping (clearing on an unrelated
-    call's success, or reasoning about round ordering) is racy: two
-    concurrent tasks mutating shared state have no guaranteed completion
-    order. A purely per-key count that only reacts to that same key's own
-    outcome has no such race, and "this exact call has now failed N times"
-    is true regardless of what else succeeded in the meantime -- it does not
-    need cross-call ordering to be honest.
+    The count is scoped to this one (tool, call_signature) key, cleared only
+    by that exact call's own success (see ``_clear_tool_failure_note``) --
+    never phrased as "in a row" or otherwise implying nothing else happened
+    meanwhile. PydanticAI's default 'graceful' end strategy runs function
+    tools from the same model-response round concurrently, so if the model
+    ever dispatches two calls sharing the identical key (the same tool with
+    the exact same arguments), both would mutate this same key with no
+    guaranteed completion order. ``concurrent=True`` (from ``_mark_call_done``
+    observing a still-active sibling) makes this call skip the shared list
+    entirely rather than race it -- it is judged alone, always as a fresh
+    first failure. Whichever of the concurrent siblings turns out to resolve
+    *last* (no sibling left in flight) is the one that actually reads and
+    updates ``deps.tool_failure_notes``, against a prior state none of the
+    earlier-resolving siblings touched -- so the final record depends only on
+    which outcome is temporally freshest, never on a corrupted or
+    double-counted read.
 
     ``reason`` must already be safe to show the model and echo back to the
     user: pass ``type(error).__name__`` for a raised exception (never
@@ -180,15 +224,18 @@ def _reflect_on_tool_failure(
     arguments unchanged to stay safe).
     """
 
+    if concurrent or deps.tool_failure_notes is None:
+        return ModelRetry(
+            f"The `{tool_name}` call failed ({reason}). Do not reply with text "
+            f"yet -- {guidance}."
+        )
     key = f"{tool_name}:{call_signature}"
-    prior_attempts = 0
-    if deps.tool_failure_notes is not None:
-        prior_attempts = sum(
-            1 for note in deps.tool_failure_notes if note.get("key") == key
-        )
-        deps.tool_failure_notes.append(
-            {"tool": tool_name, "key": key, "reason": reason, "attempt": prior_attempts + 1}
-        )
+    prior_attempts = sum(
+        1 for note in deps.tool_failure_notes if note.get("key") == key
+    )
+    deps.tool_failure_notes.append(
+        {"tool": tool_name, "key": key, "reason": reason, "attempt": prior_attempts + 1}
+    )
     attempt_number = prior_attempts + 1
     if attempt_number == 1:
         return ModelRetry(
@@ -203,17 +250,18 @@ def _reflect_on_tool_failure(
 
 
 def _clear_tool_failure_note(
-    deps: AgentDeps, tool_name: str, call_signature: str
+    deps: AgentDeps, tool_name: str, call_signature: str, *, concurrent: bool = False
 ) -> None:
     """Drop standing failure memory for one exact call once it succeeds.
 
-    Scoped to only this (tool, call_signature) key so it can never race with
-    a concurrent sibling call: each key's notes are only ever added or
-    removed by that same key's own calls, so completion order between
-    different calls never matters.
+    Scoped to only this (tool, call_signature) key. ``concurrent=True`` (a
+    still-active identical sibling per ``_mark_call_done``) skips the
+    mutation entirely instead of racing that sibling -- see
+    ``_reflect_on_tool_failure`` for why that keeps the final record
+    deterministic.
     """
 
-    if deps.tool_failure_notes is None:
+    if concurrent or deps.tool_failure_notes is None:
         return
     key = f"{tool_name}:{call_signature}"
     deps.tool_failure_notes[:] = [
@@ -232,6 +280,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         call_signature = _tool_call_signature(
             query=query.strip(), mode=mode, max_results=max_results
         )
+        _mark_call_active(ctx.deps, "web_search", call_signature)
         try:
             result = await existing_web_search(
                 query=query.strip(),
@@ -246,11 +295,13 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"mode": mode},
                 )
+            concurrent = _mark_call_done(ctx.deps, "web_search", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "web_search",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
 
         safe_metadata: dict[str, Any] = {"mode": mode}
@@ -283,13 +334,18 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             # the same reflect-and-retry path as a raised exception. The
             # "error" field here is always one of skill_tools.py's own
             # short, hardcoded messages, never raw provider/exception text.
+            concurrent = _mark_call_done(ctx.deps, "web_search", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "web_search",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                concurrent=concurrent,
             )
-        _clear_tool_failure_note(ctx.deps, "web_search", call_signature)
+        concurrent = _mark_call_done(ctx.deps, "web_search", call_signature)
+        _clear_tool_failure_note(
+            ctx.deps, "web_search", call_signature, concurrent=concurrent
+        )
         if isinstance(result, dict):
             return {
                 **result,
@@ -315,6 +371,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         call_signature = _tool_call_signature(
             query=query.strip(), intent=intent, max_results=max_results
         )
+        _mark_call_active(ctx.deps, "academic_search", call_signature)
         try:
             result = await existing_academic_search(
                 query=query.strip(),
@@ -329,11 +386,13 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"intent": intent, "scope": "WEB"},
                 )
+            concurrent = _mark_call_done(ctx.deps, "academic_search", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "academic_search",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
 
         ok = result.get("ok", True)
@@ -353,13 +412,18 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             # result["error"] here is always one of the four bounded
             # validation codes checked in _academic_search_should_reflect,
             # never raw provider text.
+            concurrent = _mark_call_done(ctx.deps, "academic_search", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "academic_search",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                concurrent=concurrent,
             )
-        _clear_tool_failure_note(ctx.deps, "academic_search", call_signature)
+        concurrent = _mark_call_done(ctx.deps, "academic_search", call_signature)
+        _clear_tool_failure_note(
+            ctx.deps, "academic_search", call_signature, concurrent=concurrent
+        )
         return {
             **result,
             "data_boundary": data_only_boundary("academic_external"),
@@ -392,6 +456,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             issue_number=issue_number,
             max_results=max_results,
         )
+        _mark_call_active(ctx.deps, "github_search", call_signature)
         try:
             result = await existing_github_search(
                 query=query.strip(),
@@ -409,11 +474,13 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"intent": intent, "scope": "WEB"},
                 )
+            concurrent = _mark_call_done(ctx.deps, "github_search", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "github_search",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
 
         ok = result.get("ok", True)
@@ -432,13 +499,18 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
         if not ok:
             # result["error"] here is always one of github_search.py's own
             # short machine-readable codes, never raw provider text.
+            concurrent = _mark_call_done(ctx.deps, "github_search", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "github_search",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                concurrent=concurrent,
             )
-        _clear_tool_failure_note(ctx.deps, "github_search", call_signature)
+        concurrent = _mark_call_done(ctx.deps, "github_search", call_signature)
+        _clear_tool_failure_note(
+            ctx.deps, "github_search", call_signature, concurrent=concurrent
+        )
         return {
             **result,
             "data_boundary": data_only_boundary("github_public_api"),
@@ -451,6 +523,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
     ) -> dict[str, object]:
         started_at = time.perf_counter()
         call_signature = _tool_call_signature(query=query, top_k=top_k)
+        _mark_call_active(ctx.deps, "search_my_files", call_signature)
         try:
             result = await existing_my_files_search(query=query, top_k=top_k)
         except Exception as error:
@@ -461,11 +534,13 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "MY_FILES"},
                 )
+            concurrent = _mark_call_done(ctx.deps, "search_my_files", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "search_my_files",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
         ok = result.get("ok", True)
         if ctx.deps.tool_event_recorder is not None:
@@ -480,13 +555,18 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 },
             )
         if not ok:
+            concurrent = _mark_call_done(ctx.deps, "search_my_files", call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "search_my_files",
                 str(result.get("error") or "unsuccessful_result"),
                 call_signature,
+                concurrent=concurrent,
             )
-        _clear_tool_failure_note(ctx.deps, "search_my_files", call_signature)
+        concurrent = _mark_call_done(ctx.deps, "search_my_files", call_signature)
+        _clear_tool_failure_note(
+            ctx.deps, "search_my_files", call_signature, concurrent=concurrent
+        )
         return {
             **result,
             "data_boundary": data_only_boundary("uploaded_files"),
@@ -498,6 +578,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
     ) -> dict[str, object]:
         policy = get_tool_policy("test_sensitive_action")
         call_signature = _tool_call_signature(reason=reason.strip())
+        _mark_call_active(ctx.deps, policy.tool_name, call_signature)
         try:
             if not ctx.deps.conversation_id or not ctx.deps.run_id:
                 raise RuntimeError(
@@ -533,11 +614,13 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
             # advice would defeat that guarantee (a paraphrased reason is a
             # different key, so a commit that actually succeeded server-side
             # but looked like a failure to the client could be duplicated).
+            concurrent = _mark_call_done(ctx.deps, policy.tool_name, call_signature)
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 policy.tool_name,
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
                 guidance=(
                     "decide why this likely failed, then retry this exact "
                     "same action with the reason text UNCHANGED -- do not "
@@ -552,7 +635,10 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "action cannot be completed right now"
                 ),
             ) from error
-        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
+        concurrent = _mark_call_done(ctx.deps, policy.tool_name, call_signature)
+        _clear_tool_failure_note(
+            ctx.deps, policy.tool_name, call_signature, concurrent=concurrent
+        )
         action_id = str(pending_action["action_id"])
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -584,6 +670,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature()
+        _mark_call_active(ctx.deps, "inspect_runtime_evidence", call_signature)
         try:
             result = await asyncio.to_thread(inspect_existing_runtime_evidence)
         except Exception as error:
@@ -594,13 +681,22 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "PROJECT_RUNTIME_EVIDENCE"},
                 )
+            concurrent = _mark_call_done(
+                ctx.deps, "inspect_runtime_evidence", call_signature
+            )
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "inspect_runtime_evidence",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
+        concurrent = _mark_call_done(
+            ctx.deps, "inspect_runtime_evidence", call_signature
+        )
+        _clear_tool_failure_note(
+            ctx.deps, "inspect_runtime_evidence", call_signature, concurrent=concurrent
+        )
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -634,6 +730,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature()
+        _mark_call_active(ctx.deps, "inspect_architecture_evidence", call_signature)
         try:
             result = await asyncio.to_thread(
                 inspect_existing_architecture_evidence
@@ -646,13 +743,25 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "PROJECT_ARCHITECTURE_EVIDENCE"},
                 )
+            concurrent = _mark_call_done(
+                ctx.deps, "inspect_architecture_evidence", call_signature
+            )
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "inspect_architecture_evidence",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_architecture_evidence", call_signature)
+        concurrent = _mark_call_done(
+            ctx.deps, "inspect_architecture_evidence", call_signature
+        )
+        _clear_tool_failure_note(
+            ctx.deps,
+            "inspect_architecture_evidence",
+            call_signature,
+            concurrent=concurrent,
+        )
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -692,6 +801,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature(component=component)
+        _mark_call_active(ctx.deps, "inspect_source_status", call_signature)
         try:
             result = await asyncio.to_thread(
                 inspect_existing_source_status,
@@ -708,11 +818,15 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                         "component": component,
                     },
                 )
+            concurrent = _mark_call_done(
+                ctx.deps, "inspect_source_status", call_signature
+            )
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "inspect_source_status",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
 
         policy = tool_metadata("inspect_source_status")
@@ -757,7 +871,10 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
-        _clear_tool_failure_note(ctx.deps, "inspect_source_status", call_signature)
+        concurrent = _mark_call_done(ctx.deps, "inspect_source_status", call_signature)
+        _clear_tool_failure_note(
+            ctx.deps, "inspect_source_status", call_signature, concurrent=concurrent
+        )
         return {
             **result,
             "policy": policy,
@@ -775,6 +892,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
 
         started_at = time.perf_counter()
         call_signature = _tool_call_signature(source_id=source_id)
+        _mark_call_active(ctx.deps, "inspect_source_of_truth", call_signature)
         try:
             result = await inspect_existing_source_of_truth(
                 source_id,
@@ -788,11 +906,15 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     int((time.perf_counter() - started_at) * 1000),
                     {"scope": "AUTHORIZED_MY_FILES_SOURCE"},
                 )
+            concurrent = _mark_call_done(
+                ctx.deps, "inspect_source_of_truth", call_signature
+            )
             raise _reflect_on_tool_failure(
                 ctx.deps,
                 "inspect_source_of_truth",
                 type(error).__name__,
                 call_signature,
+                concurrent=concurrent,
             ) from error
 
         policy = tool_metadata("inspect_source_of_truth")
@@ -845,7 +967,12 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
-        _clear_tool_failure_note(ctx.deps, "inspect_source_of_truth", call_signature)
+        concurrent = _mark_call_done(
+            ctx.deps, "inspect_source_of_truth", call_signature
+        )
+        _clear_tool_failure_note(
+            ctx.deps, "inspect_source_of_truth", call_signature, concurrent=concurrent
+        )
         return {
             **result,
             "policy": policy,
@@ -1001,6 +1128,7 @@ async def run_ahmed(
                 preflight_context.evidence_envelopes
             )
             tool_failure_notes: list[dict[str, Any]] = []
+            tool_calls_in_flight: dict[str, int] = {}
             result = await agent.run(
                 model_message,
                 message_history=message_history,
@@ -1012,6 +1140,7 @@ async def run_ahmed(
                     tool_event_recorder=tool_event_recorder,
                     evidence_envelopes=evidence_envelopes,
                     tool_failure_notes=tool_failure_notes,
+                    tool_calls_in_flight=tool_calls_in_flight,
                 ),
                 conversation_id=conversation_id,
                 run_id=run_id,
