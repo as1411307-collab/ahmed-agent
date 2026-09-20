@@ -167,6 +167,36 @@ def _reflect_on_tool_failure(
     is true regardless of what else succeeded in the meantime -- it does not
     need cross-call ordering to be honest.
 
+    This function and ``_clear_tool_failure_note`` are both plain (non-async)
+    functions with no ``await`` inside, so within Python's single-threaded
+    event loop no other coroutine can ever interleave mid-mutation here --
+    two concurrent tool calls can never corrupt or lose an update to
+    ``deps.tool_failure_notes``. The one residual ambiguity is when the
+    model dispatches two calls sharing the *identical* (tool,
+    call_signature) key concurrently in the same round (not just the same
+    tool -- the exact same arguments): whichever call happens to actually
+    call this function or ``_clear_tool_failure_note`` last determines the
+    final record. Every call site does this bookkeeping as the last thing
+    before it returns or raises -- after its own final `await`, including
+    the success-path event recorder -- so "last to mutate" and "last to
+    truly finish" are the same call; which of two genuinely concurrent
+    calls that is remains externally unpredictable, but the record itself
+    is always exactly what the actually-last call decided, an ordinary
+    last-write-wins outcome, not a corruption. An earlier attempt
+    to make that case fully order-independent by deferring a call's outcome
+    until no identical sibling was still in flight introduced worse bugs of
+    its own (a deferred outcome silently lost if the deferring call was
+    later cancelled by PydanticAI's tool_timeout, plus an ordering bug in
+    when a call's own bookkeeping ran relative to its final await) without
+    ever fully closing the gap, since a cancelled sibling still contributes
+    no resolvable outcome either way. That path was abandoned: the
+    dispatched-duplicate-calls scenario is not the mainline case this
+    feature targets (a sequential retry after the model sees feedback,
+    where no concurrency is ever involved), and its worst case is a cosmetic
+    "first failure" vs "Nth failure" wording difference in an advisory retry
+    message -- never data loss or an unbounded loop, both already precluded
+    regardless by this codebase's hard MAX_TOOL_CALLS/MAX_MODEL_REQUESTS caps.
+
     ``reason`` must already be safe to show the model and echo back to the
     user: pass ``type(error).__name__`` for a raised exception (never
     ``str(error)``, which can carry a credential-bearing URL, provider
@@ -552,7 +582,6 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "action cannot be completed right now"
                 ),
             ) from error
-        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
         action_id = str(pending_action["action_id"])
         if ctx.deps.tool_event_recorder is not None:
             await ctx.deps.tool_event_recorder(
@@ -565,6 +594,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                     "status": "pending_approval",
                 },
             )
+        _clear_tool_failure_note(ctx.deps, policy.tool_name, call_signature)
         return {
             "ok": False,
             "requires_approval": True,
@@ -600,7 +630,6 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 type(error).__name__,
                 call_signature,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
 
         policy = tool_metadata("inspect_runtime_evidence")
         safe_metadata = {
@@ -621,6 +650,7 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        _clear_tool_failure_note(ctx.deps, "inspect_runtime_evidence", call_signature)
         return {
             **result,
             "policy": policy,
@@ -652,7 +682,6 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 type(error).__name__,
                 call_signature,
             ) from error
-        _clear_tool_failure_note(ctx.deps, "inspect_architecture_evidence", call_signature)
 
         policy = tool_metadata("inspect_architecture_evidence")
         safe_metadata = {
@@ -673,6 +702,9 @@ def _build_agent(model: Model, scope: Literal["WEB", "MY_FILES"]) -> Agent[Agent
                 int((time.perf_counter() - started_at) * 1000),
                 safe_metadata,
             )
+        _clear_tool_failure_note(
+            ctx.deps, "inspect_architecture_evidence", call_signature
+        )
         return {
             **result,
             "policy": policy,
