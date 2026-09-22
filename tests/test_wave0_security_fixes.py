@@ -301,6 +301,86 @@ class MyFilesDedupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["document_id"], str(existing["document_id"]))
 
 
+class VectorUnavailableFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """Codex finding on PR #19: when pgvector is unavailable, document_chunks
+    has no embedding column, so store_document_embeddings /
+    search_vector_document_chunks raise PersistenceError on that missing
+    column -- and that error wasn't caught, defeating the FTS fallback that
+    pgvector being optional is supposed to provide. ingest_document and
+    search_my_files must check vector_storage_available() first and skip
+    the vector path entirely rather than let that PersistenceError escape.
+    """
+
+    async def test_ingest_document_skips_embedding_when_vector_unavailable(self) -> None:
+        import my_files
+
+        chunk = SimpleNamespace(
+            chunk_index=0, page_number=None, content="hello world", metadata={}
+        )
+        with patch.object(
+            my_files, "find_document_by_hash", new=AsyncMock(return_value=None)
+        ), patch.object(
+            my_files, "create_original_source", new=AsyncMock()
+        ), patch.object(
+            my_files, "extract_document", return_value=["hello world"]
+        ), patch.object(
+            my_files, "build_chunks", return_value=[chunk]
+        ), patch.object(
+            my_files, "store_document", new=AsyncMock(return_value=True)
+        ), patch.object(
+            my_files, "update_original_source_extraction_status", new=AsyncMock()
+        ), patch.object(
+            my_files, "vector_storage_available", new=AsyncMock(return_value=False)
+        ), patch.object(
+            my_files, "get_embedding_provider"
+        ) as provider_mock, patch.object(
+            my_files, "store_document_embeddings", new=AsyncMock()
+        ) as store_embeddings_mock:
+            result = await my_files.ingest_document(
+                document_id="55555555-5555-5555-5555-555555555555",
+                filename="notes.md",
+                mime_type="text/markdown",
+                data=b"hello world",
+            )
+        provider_mock.assert_not_called()
+        store_embeddings_mock.assert_not_awaited()
+        self.assertEqual(result["status"], "VECTOR_UNAVAILABLE")
+
+    async def test_search_my_files_falls_back_to_fts_when_vector_unavailable(self) -> None:
+        import my_files
+
+        fts_row = {
+            "document_id": "11111111-1111-1111-1111-111111111111",
+            "filename": "notes.md",
+            "mime_type": "text/markdown",
+            "source_type": "upload",
+            "file_hash": "abc123",
+            "source_id": None,
+            "source_sha256": None,
+            "original_available": False,
+            "chunk_index": 0,
+            "page_number": None,
+            "content": "hello world",
+            "rank": 1.0,
+        }
+        with patch.object(
+            my_files,
+            "search_fts_document_chunks",
+            new=AsyncMock(return_value=[fts_row]),
+        ), patch.object(
+            my_files, "vector_storage_available", new=AsyncMock(return_value=False)
+        ), patch.object(
+            my_files, "get_embedding_provider"
+        ) as provider_mock, patch.object(
+            my_files, "search_vector_document_chunks", new=AsyncMock()
+        ) as search_vector_mock:
+            result = await my_files.search_my_files("hello")
+        provider_mock.assert_not_called()
+        search_vector_mock.assert_not_awaited()
+        self.assertEqual(result["retrieval_mode"], "FTS_FALLBACK")
+        self.assertEqual(len(result["results"]), 1)
+
+
 class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
     """Issue #14: store_document inserts with ON CONFLICT and reports races."""
 

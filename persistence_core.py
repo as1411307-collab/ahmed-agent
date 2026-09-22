@@ -18,6 +18,7 @@ class PersistenceError(RuntimeError):
 _pool: asyncpg.Pool | None = None
 _schema_ready = False
 _schema_lock = asyncio.Lock()
+_vector_storage_available = False
 TEST_RETENTION_SCOPES = ("fault_injection", "probe")
 RETENTION_POLICY = {
     "completed_checkpoint_days": 30,
@@ -146,25 +147,49 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
 
             CREATE INDEX IF NOT EXISTS document_chunks_document_idx
                 ON document_chunks (document_id, chunk_index);
-
-            CREATE INDEX IF NOT EXISTS document_chunks_content_fts_idx
-                ON document_chunks USING GIN (to_tsvector('simple', content));
             """
         )
     except Exception as error:
         raise PersistenceError("Could not initialize the base persistence schema.") from error
 
+    # CONCURRENTLY and its own (non-multi-statement) execute() call, on
+    # purpose: on an install that already has a populated document_chunks
+    # (e.g. upgrading from a version of this schema without this index), a
+    # plain CREATE INDEX would hold a lock that blocks writes for the whole
+    # build, and folding it into the block above would let the shared
+    # 30s command_timeout cancel it and leave _schema_ready permanently
+    # false. Failure here is logged and tolerated -- FTS queries just fall
+    # back to a full scan until it eventually succeeds -- rather than
+    # blocking every persistence operation on it.
+    try:
+        await pool.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx
+                ON document_chunks USING GIN (to_tsvector('simple', content));
+            """
+        )
+    except Exception as error:
+        logger.warning(
+            "Could not build document_chunks_content_fts_idx; FTS queries "
+            "will use a full scan until this succeeds: %s",
+            error,
+        )
+
+    global _vector_storage_available
+    vector_storage_ready = False
     if pgvector_available:
         try:
             await pool.execute(
                 "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector;"
             )
+            vector_storage_ready = True
         except Exception as error:
             logger.warning(
                 "Could not add the pgvector 'embedding' column to "
                 "document_chunks; vector search stays disabled: %s",
                 error,
             )
+    _vector_storage_available = vector_storage_ready
 
 
 async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
@@ -353,6 +378,19 @@ async def _get_pool() -> asyncpg.Pool:
             raise PersistenceError("PostgreSQL is unavailable.") from error
     await _ensure_policy_schema(_pool)
     return _pool
+
+
+async def vector_storage_available() -> bool:
+    """Whether document_chunks.embedding actually exists on this database.
+
+    Callers that would otherwise send SQL referencing that column (storing
+    or searching embeddings) must check this first and skip straight to
+    FTS-only behavior when it's False, instead of letting the resulting
+    PersistenceError (missing column) propagate and defeat the FTS
+    fallback that's the whole point of pgvector being optional.
+    """
+    await _get_pool()
+    return _vector_storage_available
 
 
 

@@ -25,6 +25,7 @@ from persistence_core import (
     _get_pool,
     close_pool,
     doctor_storage_health,
+    vector_storage_available,
 )
 from persistence_docs import (
     cleanup_evaluation_run,
