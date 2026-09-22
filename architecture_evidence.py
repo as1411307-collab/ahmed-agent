@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from typing import Any
 
 from evidence_core import (
     EvidenceCoreError,
@@ -118,7 +117,7 @@ ARCHITECTURE_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
             "search_fabric.py",
             "academic_search.py",
             "github_search.py",
-            "model_providers.py",
+            "agent_providers.py",
         ),
         "implementation_patterns": (
             r"web_search|academic_search|github_search",

@@ -38,6 +38,7 @@ from persistence import (
     store_document_embeddings,
     update_original_source_extraction_status,
     update_document_embedding_status,
+    vector_storage_available,
 )
 
 
@@ -451,59 +452,70 @@ async def ingest_document(
 
     embedding_status = "embedding_failed"
     embedding_metrics: dict[str, int | float | str] = {}
-    try:
-        provider = get_embedding_provider()
-        embeddings = await asyncio.to_thread(
-            provider.embed_documents,
-            [chunk.content for chunk in chunks],
-        )
-        if len(embeddings) != len(chunks) or provider.dimension <= 0:
-            raise EmbeddingError("The embedding count did not match the chunks.")
-        embedding_rows = [
-            (chunk.chunk_index, vector_literal(vector))
-            for chunk, vector in zip(chunks, embeddings, strict=True)
-        ]
-        await store_document_embeddings(
-            document_id=document_id,
-            embeddings=embedding_rows,
-            embedding_model=provider.model_name,
-            embedding_dimension=provider.dimension,
-            embedding_version=MY_FILES_EMBEDDING_VERSION,
-        )
-        embedding_status = "ready"
-        embedding_metrics = provider.last_metrics
-        await update_original_source_extraction_status(
-            source_id=source_id,
-            status="ready",
-        )
-    except EmbeddingError as error:
-        await update_document_embedding_status(
-            document_id=document_id,
-            status="embedding_failed",
-            embedding_model=MY_FILES_EMBEDDING_MODEL,
-            embedding_dimension=None,
-            embedding_version=MY_FILES_EMBEDDING_VERSION,
-        )
-        await update_original_source_extraction_status(
-            source_id=source_id,
-            status="embedding_failed",
-        )
-        embedding_metrics = {"embedding_status": error.status}
-    except PersistenceError:
-        raise
-    except Exception:
-        await update_document_embedding_status(
-            document_id=document_id,
-            status="embedding_failed",
-            embedding_model=MY_FILES_EMBEDDING_MODEL,
-            embedding_dimension=None,
-            embedding_version=MY_FILES_EMBEDDING_VERSION,
-        )
-        await update_original_source_extraction_status(
-            source_id=source_id,
-            status="embedding_failed",
-        )
-        embedding_metrics = {"embedding_status": "ERROR"}
+    if not await vector_storage_available():
+        # pgvector isn't installed on this database, so document_chunks has
+        # no embedding column. The document is already stored and
+        # FTS-searchable (status "fts_ready", set above); don't attempt
+        # vector storage at all, since store_document_embeddings would just
+        # fail on the missing column and, unlike EmbeddingError, that
+        # PersistenceError isn't caught below -- it would fail the whole
+        # upload instead of leaving it at its already-successful FTS state.
+        embedding_status = "VECTOR_UNAVAILABLE"
+        embedding_metrics = {"embedding_status": "VECTOR_UNAVAILABLE"}
+    else:
+        try:
+            provider = get_embedding_provider()
+            embeddings = await asyncio.to_thread(
+                provider.embed_documents,
+                [chunk.content for chunk in chunks],
+            )
+            if len(embeddings) != len(chunks) or provider.dimension <= 0:
+                raise EmbeddingError("The embedding count did not match the chunks.")
+            embedding_rows = [
+                (chunk.chunk_index, vector_literal(vector))
+                for chunk, vector in zip(chunks, embeddings, strict=True)
+            ]
+            await store_document_embeddings(
+                document_id=document_id,
+                embeddings=embedding_rows,
+                embedding_model=provider.model_name,
+                embedding_dimension=provider.dimension,
+                embedding_version=MY_FILES_EMBEDDING_VERSION,
+            )
+            embedding_status = "ready"
+            embedding_metrics = provider.last_metrics
+            await update_original_source_extraction_status(
+                source_id=source_id,
+                status="ready",
+            )
+        except EmbeddingError as error:
+            await update_document_embedding_status(
+                document_id=document_id,
+                status="embedding_failed",
+                embedding_model=MY_FILES_EMBEDDING_MODEL,
+                embedding_dimension=None,
+                embedding_version=MY_FILES_EMBEDDING_VERSION,
+            )
+            await update_original_source_extraction_status(
+                source_id=source_id,
+                status="embedding_failed",
+            )
+            embedding_metrics = {"embedding_status": error.status}
+        except PersistenceError:
+            raise
+        except Exception:
+            await update_document_embedding_status(
+                document_id=document_id,
+                status="embedding_failed",
+                embedding_model=MY_FILES_EMBEDDING_MODEL,
+                embedding_dimension=None,
+                embedding_version=MY_FILES_EMBEDDING_VERSION,
+            )
+            await update_original_source_extraction_status(
+                source_id=source_id,
+                status="embedding_failed",
+            )
+            embedding_metrics = {"embedding_status": "ERROR"}
     logger.info(
         json.dumps(
             {
@@ -635,26 +647,34 @@ async def search_my_files(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, A
     fts_rows = await search_fts_document_chunks(normalized_query, candidate_k)
     vector_rows: list[dict[str, Any]] = []
     embedding_status = "NOT_ATTEMPTED"
-    provider = get_embedding_provider()
-    try:
-        query_embedding = await asyncio.to_thread(
-            provider.embed_query,
-            normalized_query,
-        )
-        vector_rows = await search_vector_document_chunks(
-            vector=vector_literal(query_embedding),
-            top_k=candidate_k,
-            embedding_model=provider.model_name,
-            embedding_dimension=provider.dimension,
-            embedding_version=MY_FILES_EMBEDDING_VERSION,
-        )
-        embedding_status = provider.status
-    except EmbeddingError as error:
-        embedding_status = error.status
-    except PersistenceError:
-        raise
-    except Exception:
-        embedding_status = "ERROR"
+    if not await vector_storage_available():
+        # pgvector isn't installed: document_chunks has no embedding column,
+        # so search_vector_document_chunks would raise a PersistenceError
+        # (missing column) that -- unlike EmbeddingError -- isn't caught
+        # below, discarding the fts_rows already fetched above and failing
+        # the whole search instead of falling back to FTS-only results.
+        embedding_status = "VECTOR_UNAVAILABLE"
+    else:
+        provider = get_embedding_provider()
+        try:
+            query_embedding = await asyncio.to_thread(
+                provider.embed_query,
+                normalized_query,
+            )
+            vector_rows = await search_vector_document_chunks(
+                vector=vector_literal(query_embedding),
+                top_k=candidate_k,
+                embedding_model=provider.model_name,
+                embedding_dimension=provider.dimension,
+                embedding_version=MY_FILES_EMBEDDING_VERSION,
+            )
+            embedding_status = provider.status
+        except EmbeddingError as error:
+            embedding_status = error.status
+        except PersistenceError:
+            raise
+        except Exception:
+            embedding_status = "ERROR"
     rows = _hybrid_results(
         query=normalized_query,
         fts_rows=fts_rows,

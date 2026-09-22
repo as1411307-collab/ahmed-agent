@@ -154,6 +154,177 @@ class EvaluationBaselineTests(unittest.TestCase):
         self.assertEqual(len(upload_calls), 3)
         self.assertTrue(cleanup_calls)
 
+    def test_aa_rc_018_accepts_vector_unavailable_uploads(self) -> None:
+        """Codex finding on PR #19: with pgvector unavailable, every upload
+        succeeds via FTS and the endpoint returns 202/VECTOR_UNAVAILABLE
+        (not 201/ready); the AA-RC-018 upload check must accept that as a
+        pass, not report FAIL for a deployment that's working as designed.
+        """
+        case = next(
+            case
+            for case in load_case_document(
+                Path("real-cases-validated.json"),
+                require_baseline_size=True,
+            )[1]
+            if case["id"] == "AA-RC-018"
+        )
+        cleanup_calls: list[str] = []
+
+        def fake_upload(**kwargs: object) -> tuple[int, dict[str, object], dict[str, str]]:
+            files = kwargs["files"]
+            names = [str(item["filename"]) for item in files]  # type: ignore[index]
+            if any("unsafe" in name or ".." in name for name in names):
+                return 415, {"error": "UNSAFE_FILENAME"}, {}
+            if any("invalid" in name for name in names):
+                return 415, {"files": [{"status": "invalid_file_content"}]}, {}
+            return (
+                202,
+                {
+                    "files": [
+                        {
+                            "filename": name,
+                            "status": "VECTOR_UNAVAILABLE",
+                            "source_id": f"source-{index}",
+                        }
+                        for index, name in enumerate(names)
+                    ]
+                },
+                {},
+            )
+
+        def fake_chat(**_: object) -> tuple[int, dict[str, object], dict[str, str]]:
+            return (
+                200,
+                {
+                    "reply": (
+                        "تم فحص الملفات المرفوعة وعرض حالة كل ملف في نطاق MY_FILES."
+                    )
+                },
+                {},
+            )
+
+        async def fake_load(_: str) -> dict[str, object]:
+            return {
+                "run": {"status": "succeeded", "model_name": "test-model"},
+                "tool_events": [],
+                "pending_actions": [],
+            }
+
+        async def fake_cleanup(*, source_id: str) -> None:
+            cleanup_calls.append(source_id)
+
+        with (
+            patch(
+                "eval_http._post_file_upload",
+                side_effect=fake_upload,
+                create=True,
+            ),
+            patch("eval_exec._post_chat_message", side_effect=fake_chat),
+            patch("eval_exec.load_run_evaluation_data", new=fake_load),
+            patch(
+                "eval_http.delete_original_source",
+                new=fake_cleanup,
+                create=True,
+            ),
+            patch(
+                "eval_exec.cleanup_evaluation_run",
+                new=AsyncMock(return_value={"audit_events_preserved": 1}),
+            ),
+        ):
+            result = asyncio.run(
+                execute_real_case(
+                    case,
+                    base_url="https://example.test",
+                    owner_token="owner-secret",
+                    provider="gemini",
+                    timeout_seconds=1,
+                )
+            )
+
+        self.assertEqual(result["upload_e2e"]["status"], "PASS")
+
+    def test_aa_rc_018_rejects_mismatched_upload_status_code(self) -> None:
+        """Codex finding on PR #19: accepting {201, 202} independently of the
+        actual per-file statuses missed a server bug returning the wrong
+        code for what it actually stored (e.g. 201 despite a degraded
+        status, or 202 when every file is fully ready).
+        """
+        case = next(
+            case
+            for case in load_case_document(
+                Path("real-cases-validated.json"),
+                require_baseline_size=True,
+            )[1]
+            if case["id"] == "AA-RC-018"
+        )
+
+        def fake_upload(**kwargs: object) -> tuple[int, dict[str, object], dict[str, str]]:
+            files = kwargs["files"]
+            names = [str(item["filename"]) for item in files]  # type: ignore[index]
+            if any("unsafe" in name or ".." in name for name in names):
+                return 415, {"error": "UNSAFE_FILENAME"}, {}
+            if any("invalid" in name for name in names):
+                return 415, {"files": [{"status": "invalid_file_content"}]}, {}
+            # Wrong: every file is "embedding_failed" (degraded) but the
+            # endpoint claims full success (201) rather than 202.
+            return (
+                201,
+                {
+                    "files": [
+                        {
+                            "filename": name,
+                            "status": "embedding_failed",
+                            "source_id": f"source-{index}",
+                        }
+                        for index, name in enumerate(names)
+                    ]
+                },
+                {},
+            )
+
+        def fake_chat(**_: object) -> tuple[int, dict[str, object], dict[str, str]]:
+            return 200, {"reply": "ok"}, {}
+
+        async def fake_load(_: str) -> dict[str, object]:
+            return {
+                "run": {"status": "succeeded", "model_name": "test-model"},
+                "tool_events": [],
+                "pending_actions": [],
+            }
+
+        async def fake_cleanup(*, source_id: str) -> None:
+            return None
+
+        with (
+            patch(
+                "eval_http._post_file_upload",
+                side_effect=fake_upload,
+                create=True,
+            ),
+            patch("eval_exec._post_chat_message", side_effect=fake_chat),
+            patch("eval_exec.load_run_evaluation_data", new=fake_load),
+            patch(
+                "eval_http.delete_original_source",
+                new=fake_cleanup,
+                create=True,
+            ),
+            patch(
+                "eval_exec.cleanup_evaluation_run",
+                new=AsyncMock(return_value={"audit_events_preserved": 1}),
+            ),
+        ):
+            result = asyncio.run(
+                execute_real_case(
+                    case,
+                    base_url="https://example.test",
+                    owner_token="owner-secret",
+                    provider="gemini",
+                    timeout_seconds=1,
+                )
+            )
+
+        self.assertEqual(result["upload_e2e"]["status"], "FAIL")
+
     def test_aa_rc_026_requires_compound_architecture_and_external_evidence(self) -> None:
         result = validate_case_evidence_preconditions(
             case={

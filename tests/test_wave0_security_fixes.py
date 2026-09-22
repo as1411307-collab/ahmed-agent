@@ -301,6 +301,118 @@ class MyFilesDedupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["document_id"], str(existing["document_id"]))
 
 
+class VectorUnavailableFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """Codex finding on PR #19: when pgvector is unavailable, document_chunks
+    has no embedding column, so store_document_embeddings /
+    search_vector_document_chunks raise PersistenceError on that missing
+    column -- and that error wasn't caught, defeating the FTS fallback that
+    pgvector being optional is supposed to provide. ingest_document and
+    search_my_files must check vector_storage_available() first and skip
+    the vector path entirely rather than let that PersistenceError escape.
+    """
+
+    async def test_ingest_document_skips_embedding_when_vector_unavailable(self) -> None:
+        import my_files
+
+        chunk = SimpleNamespace(
+            chunk_index=0, page_number=None, content="hello world", metadata={}
+        )
+        with patch.object(
+            my_files, "find_document_by_hash", new=AsyncMock(return_value=None)
+        ), patch.object(
+            my_files, "create_original_source", new=AsyncMock()
+        ), patch.object(
+            my_files, "extract_document", return_value=["hello world"]
+        ), patch.object(
+            my_files, "build_chunks", return_value=[chunk]
+        ), patch.object(
+            my_files, "store_document", new=AsyncMock(return_value=True)
+        ), patch.object(
+            my_files, "update_original_source_extraction_status", new=AsyncMock()
+        ), patch.object(
+            my_files, "vector_storage_available", new=AsyncMock(return_value=False)
+        ), patch.object(
+            my_files, "get_embedding_provider"
+        ) as provider_mock, patch.object(
+            my_files, "store_document_embeddings", new=AsyncMock()
+        ) as store_embeddings_mock:
+            result = await my_files.ingest_document(
+                document_id="55555555-5555-5555-5555-555555555555",
+                filename="notes.md",
+                mime_type="text/markdown",
+                data=b"hello world",
+            )
+        provider_mock.assert_not_called()
+        store_embeddings_mock.assert_not_awaited()
+        self.assertEqual(result["status"], "VECTOR_UNAVAILABLE")
+
+    async def test_search_my_files_falls_back_to_fts_when_vector_unavailable(self) -> None:
+        import my_files
+
+        fts_row = {
+            "document_id": "11111111-1111-1111-1111-111111111111",
+            "filename": "notes.md",
+            "mime_type": "text/markdown",
+            "source_type": "upload",
+            "file_hash": "abc123",
+            "source_id": None,
+            "source_sha256": None,
+            "original_available": False,
+            "chunk_index": 0,
+            "page_number": None,
+            "content": "hello world",
+            "rank": 1.0,
+        }
+        with patch.object(
+            my_files,
+            "search_fts_document_chunks",
+            new=AsyncMock(return_value=[fts_row]),
+        ), patch.object(
+            my_files, "vector_storage_available", new=AsyncMock(return_value=False)
+        ), patch.object(
+            my_files, "get_embedding_provider"
+        ) as provider_mock, patch.object(
+            my_files, "search_vector_document_chunks", new=AsyncMock()
+        ) as search_vector_mock:
+            result = await my_files.search_my_files("hello")
+        provider_mock.assert_not_called()
+        search_vector_mock.assert_not_awaited()
+        self.assertEqual(result["retrieval_mode"], "FTS_FALLBACK")
+        self.assertEqual(len(result["results"]), 1)
+
+
+class UploadStatusCodeTests(unittest.TestCase):
+    """Codex finding on PR #19: /files/upload's status-code branching only
+    accepted {"ready", "embedding_failed"}, so the new VECTOR_UNAVAILABLE
+    status (a successful, FTS-searchable upload with no embedding attempted
+    because pgvector isn't installed) was rejected as a 422 client error.
+    """
+
+    def test_ready_is_201(self) -> None:
+        import server
+
+        self.assertEqual(server._upload_response_status_code([{"status": "ready"}]), 201)
+
+    def test_embedding_failed_is_202(self) -> None:
+        import server
+
+        self.assertEqual(
+            server._upload_response_status_code([{"status": "embedding_failed"}]), 202
+        )
+
+    def test_vector_unavailable_is_202_not_422(self) -> None:
+        import server
+
+        self.assertEqual(
+            server._upload_response_status_code([{"status": "VECTOR_UNAVAILABLE"}]), 202
+        )
+
+    def test_unrecognized_status_is_422(self) -> None:
+        import server
+
+        self.assertEqual(server._upload_response_status_code([{"status": "empty"}]), 422)
+
+
 class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
     """Issue #14: store_document inserts with ON CONFLICT and reports races."""
 
@@ -444,6 +556,170 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("documents_file_hash_key" in s for s in pool.statements)
         )
+
+    async def test_base_schema_tolerates_missing_pgvector(self) -> None:
+        """A Postgres without pgvector must still get the core tables and the
+        FTS index (Codex P1 finding: startup used to hard-fail on any
+        persistence operation when the 'vector' extension wasn't installed).
+        """
+        import persistence_core
+
+        class _Pool:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            async def execute(self, sql, **kwargs) -> None:
+                self.statements.append(sql)
+                if "CREATE EXTENSION IF NOT EXISTS vector" in sql:
+                    raise Exception('extension "vector" is not available')
+                if "ADD COLUMN IF NOT EXISTS embedding vector" in sql:
+                    raise AssertionError(
+                        "embedding column must not be attempted when pgvector is unavailable"
+                    )
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                return False
+
+        pool = _Pool()
+        persistence_core._schema_ready = False
+        try:
+            await persistence_core._ensure_policy_schema(pool)
+        finally:
+            persistence_core._schema_ready = False
+        assert persistence_core._fts_index_task is not None
+        await persistence_core._fts_index_task
+        self.assertTrue(
+            any("CREATE TABLE IF NOT EXISTS agent_sessions" in s for s in pool.statements)
+        )
+        self.assertTrue(
+            any("document_chunks_content_fts_idx" in s for s in pool.statements)
+        )
+
+    async def test_base_schema_recovers_invalid_fts_index(self) -> None:
+        """Codex P2 finding: CREATE INDEX CONCURRENTLY IF NOT EXISTS matches
+        an existing index by name regardless of validity, so a build
+        cancelled by the command timeout leaves a permanently-ignored
+        invalid index unless it's explicitly detected and dropped first.
+        """
+        import persistence_core
+
+        class _Pool:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            async def execute(self, sql, **kwargs) -> None:
+                self.statements.append(sql)
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                if "indisvalid" in sql:
+                    return True
+                return None
+
+        pool = _Pool()
+        persistence_core._schema_ready = False
+        try:
+            await persistence_core._ensure_policy_schema(pool)
+        finally:
+            persistence_core._schema_ready = False
+        assert persistence_core._fts_index_task is not None
+        await persistence_core._fts_index_task
+        drop_index = next(
+            i for i, s in enumerate(pool.statements) if "DROP INDEX CONCURRENTLY" in s
+        )
+        create_index = next(
+            i
+            for i, s in enumerate(pool.statements)
+            if "CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx" in s
+        )
+        self.assertLess(drop_index, create_index)
+
+
+class AppendMessagesSequenceLockTests(unittest.IsolatedAsyncioTestCase):
+    """Codex P2 finding: sequence allocation must be serialized per session,
+    or two concurrent runs can compute the same MAX(sequence_number) and one
+    loses its response to the new UNIQUE (session_id, sequence_number)
+    constraint.
+    """
+
+    async def test_locks_session_row_before_computing_next_sequence(self) -> None:
+        import persistence_runs
+
+        class _Transaction:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _Connection:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def transaction(self) -> _Transaction:
+                return _Transaction()
+
+            async def execute(self, sql, *args) -> None:
+                self.statements.append(sql)
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                return 1
+
+        class _Acquire:
+            def __init__(self, connection) -> None:
+                self._connection = connection
+
+            async def __aenter__(self):
+                return self._connection
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _Pool:
+            def __init__(self, connection) -> None:
+                self._connection = connection
+
+            def acquire(self) -> _Acquire:
+                return _Acquire(self._connection)
+
+        connection = _Connection()
+        with patch.object(
+            persistence_runs, "_get_pool", new=AsyncMock(return_value=_Pool(connection))
+        ):
+            await persistence_runs.append_new_messages(
+                session_id="11111111-1111-1111-1111-111111111111",
+                run_id="22222222-2222-2222-2222-222222222222",
+                new_messages_json=b'[{"role": "user", "content": "hi"}]',
+            )
+
+        lock_index = next(
+            i for i, s in enumerate(connection.statements) if "FOR UPDATE" in s
+        )
+        max_index = next(
+            i for i, s in enumerate(connection.statements) if "MAX(sequence_number)" in s
+        )
+        self.assertLess(lock_index, max_index)
+        self.assertIn("agent_sessions", connection.statements[lock_index])
+
+
+class AgentDepsAnnotationsTests(unittest.TestCase):
+    """Codex finding on PR #19: AgentDeps.tool_event_recorder's annotation
+    references Callable/Awaitable, so anything that resolves this exported
+    dataclass's type hints (typing.get_type_hints, framework/schema
+    introspection) needs those names importable from agent_consts, even
+    though `from __future__ import annotations` means nothing evaluates
+    them at class-definition time.
+    """
+
+    def test_get_type_hints_resolves_without_nameerror(self) -> None:
+        import typing
+
+        import agent_consts
+
+        hints = typing.get_type_hints(agent_consts.AgentDeps)
+        self.assertIn("tool_event_recorder", hints)
 
 
 class ProviderModelCacheTests(unittest.TestCase):

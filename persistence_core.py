@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import json
 import os
-import socket
-from collections.abc import Sequence
 from typing import Any
-from uuid import UUID
 
 import asyncpg
 
@@ -22,6 +18,8 @@ class PersistenceError(RuntimeError):
 _pool: asyncpg.Pool | None = None
 _schema_ready = False
 _schema_lock = asyncio.Lock()
+_vector_storage_available = False
+_fts_index_task: asyncio.Task[None] | None = None
 TEST_RETENTION_SCOPES = ("fault_injection", "probe")
 RETENTION_POLICY = {
     "completed_checkpoint_days": 30,
@@ -35,6 +33,221 @@ def _canonical_json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+async def _build_fts_index(pool: asyncpg.Pool) -> None:
+    """Build document_chunks' FTS index in the background (see the call site
+    at the end of _ensure_policy_schema for why this must never be awaited
+    from there, and why it's only fired after all schema DDL completes).
+
+    CONCURRENTLY and its own (non-multi-statement) execute() calls, on
+    purpose: a plain CREATE INDEX would hold a lock that blocks writes for
+    the whole build. Failure here is logged and tolerated -- FTS just uses
+    a full scan until it eventually succeeds.
+
+    A CONCURRENTLY build that gets cancelled (a timeout, or the process
+    dying) leaves an INVALID index cataloged under this name -- the
+    planner never uses it, and CREATE INDEX CONCURRENTLY IF NOT EXISTS
+    matches on the name regardless of validity, so it would silently skip
+    forever without the explicit check below.
+    """
+    try:
+        # Resolve 'document_chunks' via ::regclass (the same search_path
+        # resolution the unqualified "ON document_chunks" below uses)
+        # instead of matching the index name alone: a bare relname match
+        # would also catch a same-named index belonging to an unrelated
+        # schema's document_chunks table on a Postgres instance shared by
+        # multiple apps/schemas, wrongly dropping and rebuilding our own
+        # valid index on every startup while never touching the actual
+        # invalid one.
+        invalid_index_exists = await pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                WHERE i.indrelid = 'document_chunks'::regclass
+                  AND c.relname = 'document_chunks_content_fts_idx'
+                  AND NOT i.indisvalid
+            )
+            """
+        )
+        if invalid_index_exists:
+            logger.warning(
+                "document_chunks_content_fts_idx exists but is invalid "
+                "(a previous CONCURRENTLY build was likely cancelled); "
+                "dropping it so it can be rebuilt."
+            )
+            # Same explicit timeout as the CREATE below, for the same
+            # reason: this runs in the background, not on any request
+            # path, so there's no reason to let the pool's 30s default
+            # cut off a DROP CONCURRENTLY that's waiting on other
+            # transactions to release their snapshots.
+            await pool.execute(
+                "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_content_fts_idx;",
+                timeout=300,
+            )
+    except Exception as error:
+        logger.warning(
+            "Could not check/drop an invalid document_chunks_content_fts_idx: %s",
+            error,
+        )
+        return
+
+    try:
+        # An explicit timeout, well above the pool's 30s command_timeout:
+        # this now runs in the background rather than gating any request,
+        # so there's no reason to cut off a legitimately slow build on a
+        # large existing corpus.
+        await pool.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx
+                ON document_chunks USING GIN (to_tsvector('simple', content));
+            """,
+            timeout=300,
+        )
+    except Exception as error:
+        logger.warning(
+            "Could not build document_chunks_content_fts_idx; FTS queries "
+            "will use a full scan until this succeeds: %s",
+            error,
+        )
+
+
+async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
+    """Create the tables every other table here is ALTERed or joined against.
+
+    These six tables (agent_sessions, agent_runs, agent_messages, tool_events,
+    documents, document_chunks) were never defined anywhere in this repo --
+    they only existed because the original deployment's Postgres instance had
+    them provisioned out-of-band. A fresh database (e.g. a new VPS) had no way
+    to create them. This intentionally matches the exact shape every query in
+    persistence_runs.py/persistence_docs.py/persistence_events.py already
+    assumes (see those files for the column-by-column usage), including no
+    foreign keys between the operational tables -- the same looseness the
+    rest of this schema already uses (pending_actions/agent_run_checkpoints
+    also carry a bare run_id with no REFERENCES), which is what lets
+    cleanup_retention/cleanup_evaluation_run delete across these tables in a
+    specific manual order without fighting FK constraints.
+
+    pgvector is optional here, matching the existing degraded-mode contract
+    (doctor.py reports DEGRADED, not down, when pgvector is missing): the
+    relational tables and the document_chunks FTS index are always created,
+    and only the document_chunks.embedding column is skipped when the
+    'vector' extension can't be installed, so sessions/runs/messages/audit
+    and full-text MY_FILES search keep working without it.
+    """
+
+    pgvector_available = True
+    try:
+        await pool.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    except Exception as error:
+        pgvector_available = False
+        logger.warning(
+            "Postgres 'vector' extension (pgvector) is not available; "
+            "continuing without it. Vector search stays disabled and "
+            "MY_FILES search falls back to full-text search only: %s",
+            error,
+        )
+
+    try:
+        await pool.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                session_id UUID PRIMARY KEY,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                run_id UUID PRIMARY KEY,
+                session_id UUID NOT NULL,
+                status TEXT NOT NULL,
+                user_prompt TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                error_code TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                finished_at TIMESTAMPTZ
+            );
+
+            CREATE INDEX IF NOT EXISTS agent_runs_session_idx
+                ON agent_runs (session_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                message_id BIGSERIAL PRIMARY KEY,
+                session_id UUID NOT NULL,
+                run_id UUID NOT NULL,
+                sequence_number INTEGER NOT NULL,
+                message_json JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (session_id, sequence_number)
+            );
+
+            CREATE INDEX IF NOT EXISTS agent_messages_run_idx
+                ON agent_messages (run_id);
+
+            CREATE TABLE IF NOT EXISTS tool_events (
+                id BIGSERIAL PRIMARY KEY,
+                run_id UUID NOT NULL,
+                tool_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                duration_ms INTEGER,
+                safe_metadata JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS tool_events_run_idx
+                ON tool_events (run_id, id);
+
+            CREATE TABLE IF NOT EXISTS documents (
+                document_id UUID PRIMARY KEY,
+                filename TEXT NOT NULL,
+                mime_type TEXT,
+                source_type TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                embedding_model TEXT,
+                embedding_dimension INTEGER,
+                embedding_version TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                chunk_id BIGSERIAL PRIMARY KEY,
+                document_id UUID NOT NULL REFERENCES documents(document_id)
+                    ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                page_number INTEGER,
+                content TEXT NOT NULL,
+                metadata JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS document_chunks_document_idx
+                ON document_chunks (document_id, chunk_index);
+            """
+        )
+    except Exception as error:
+        raise PersistenceError("Could not initialize the base persistence schema.") from error
+
+    global _vector_storage_available
+    vector_storage_ready = False
+    if pgvector_available:
+        try:
+            await pool.execute(
+                "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector;"
+            )
+            vector_storage_ready = True
+        except Exception as error:
+            logger.warning(
+                "Could not add the pgvector 'embedding' column to "
+                "document_chunks; vector search stays disabled: %s",
+                error,
+            )
+    _vector_storage_available = vector_storage_ready
+
+
 async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
     global _schema_ready
     if _schema_ready:
@@ -42,6 +255,7 @@ async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
     async with _schema_lock:
         if _schema_ready:
             return
+        await _ensure_base_schema(pool)
         try:
             await pool.execute(
                 """
@@ -200,6 +414,21 @@ async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
                 "(existing duplicate file_hash rows?): %s",
                 error,
             )
+
+        # Fire-and-forget, and only now that every ALTER TABLE on
+        # document_chunks (the embedding column above, source_id/
+        # source_sha256 here) has completed: CREATE INDEX CONCURRENTLY
+        # takes a lock that conflicts with ALTER TABLE's ACCESS EXCLUSIVE
+        # lock on the same table, so starting the build any earlier could
+        # have it contend with -- and stall behind, or block -- schema
+        # DDL that's still in flight on document_chunks. Awaiting it here
+        # would defeat the point (blocking _schema_lock on a one-time
+        # migration), so it still just runs in the background; FTS uses a
+        # full scan until it finishes.
+        global _fts_index_task
+        if _fts_index_task is None or _fts_index_task.done():
+            _fts_index_task = asyncio.create_task(_build_fts_index(pool))
+
         _schema_ready = True
 
 
@@ -220,6 +449,19 @@ async def _get_pool() -> asyncpg.Pool:
             raise PersistenceError("PostgreSQL is unavailable.") from error
     await _ensure_policy_schema(_pool)
     return _pool
+
+
+async def vector_storage_available() -> bool:
+    """Whether document_chunks.embedding actually exists on this database.
+
+    Callers that would otherwise send SQL referencing that column (storing
+    or searching embeddings) must check this first and skip straight to
+    FTS-only behavior when it's False, instead of letting the resulting
+    PersistenceError (missing column) propagate and defeat the FTS
+    fallback that's the whole point of pgvector being optional.
+    """
+    await _get_pool()
+    return _vector_storage_available
 
 
 

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
-
-from pydantic import Field
+from typing import Any, Literal
 
 from config import AHMED_OPENAI_MODEL, AHMED_PRIMARY_MODEL
 

@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import json
-import socket
 import time
 from uuid import UUID, uuid4
 from pathlib import Path
@@ -757,6 +756,30 @@ async def reject_action(request: Request) -> Response:
     )
 
 
+_UPLOAD_OK_STATUS = "ready"
+_UPLOAD_DEGRADED_STATUSES = {"embedding_failed", "VECTOR_UNAVAILABLE"}
+
+
+def _upload_response_status_code(results: list[dict[str, object]]) -> int:
+    """HTTP status for a /files/upload batch from each file's ingest_document status.
+
+    A status outside {ready} | _UPLOAD_DEGRADED_STATUSES means the document
+    wasn't actually stored (e.g. "empty"), so that's the 422 case; the
+    degraded set covers documents that were stored and are FTS-searchable
+    but didn't get an embedding (either it failed, or -- VECTOR_UNAVAILABLE
+    -- pgvector isn't installed on this database), which is success, not a
+    client error.
+    """
+    if any(
+        result.get("status") not in ({_UPLOAD_OK_STATUS} | _UPLOAD_DEGRADED_STATUSES)
+        for result in results
+    ):
+        return 422
+    if any(result.get("status") in _UPLOAD_DEGRADED_STATUSES for result in results):
+        return 202
+    return 201
+
+
 @server.custom_route("/files/upload", methods=["POST"])
 async def files_upload(request: Request) -> Response:
     owner, status_code, error_code = await authorize_owner(
@@ -830,14 +853,7 @@ async def files_upload(request: Request) -> Response:
         return JSONResponse({"files": results}, status_code=415)
     if any(result.get("duplicate") for result in results):
         return JSONResponse({"files": results}, status_code=409)
-    if any(
-        result.get("status") not in {"ready", "embedding_failed"}
-        for result in results
-    ):
-        return JSONResponse({"files": results}, status_code=422)
-    if any(result.get("status") == "embedding_failed" for result in results):
-        return JSONResponse({"files": results}, status_code=202)
-    return JSONResponse({"files": results}, status_code=201)
+    return JSONResponse({"files": results}, status_code=_upload_response_status_code(results))
 
 
 @server.custom_route("/chat/message", methods=["POST"])

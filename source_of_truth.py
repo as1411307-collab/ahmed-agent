@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-from typing import Any
 from uuid import uuid4
 
 from evidence_core import EvidenceItem, EvidenceStatus, _redact_source_line

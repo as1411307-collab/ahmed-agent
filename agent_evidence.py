@@ -6,13 +6,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from academic_search import academic_search as existing_academic_search
 from agent_consts import EvidenceFirstContext
 from architecture_evidence import (
     inspect_architecture_evidence as inspect_existing_architecture_evidence,
 )
 from evidence_citations import build_evidence_provenance, render_evidence_citations
-from github_search import github_search as existing_github_search
 from my_files import search_my_files as existing_my_files_search
 from request_routing import RequestCapability, classify_request
 from runtime_evidence import (
