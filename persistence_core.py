@@ -152,7 +152,7 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
     except Exception as error:
         raise PersistenceError("Could not initialize the base persistence schema.") from error
 
-    # CONCURRENTLY and its own (non-multi-statement) execute() call, on
+    # CONCURRENTLY and its own (non-multi-statement) execute() calls, on
     # purpose: on an install that already has a populated document_chunks
     # (e.g. upgrading from a version of this schema without this index), a
     # plain CREATE INDEX would hold a lock that blocks writes for the whole
@@ -161,6 +161,38 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
     # false. Failure here is logged and tolerated -- FTS queries just fall
     # back to a full scan until it eventually succeeds -- rather than
     # blocking every persistence operation on it.
+    #
+    # A CONCURRENTLY build that gets cancelled (that same timeout, or the
+    # process dying) leaves an INVALID index cataloged under this name --
+    # the planner never uses it, and CREATE INDEX CONCURRENTLY IF NOT
+    # EXISTS matches on the name regardless of validity, so it would
+    # silently skip forever without the explicit check below.
+    try:
+        invalid_index_exists = await pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_class c
+                JOIN pg_index i ON i.indexrelid = c.oid
+                WHERE c.relname = 'document_chunks_content_fts_idx'
+                  AND NOT i.indisvalid
+            )
+            """
+        )
+        if invalid_index_exists:
+            logger.warning(
+                "document_chunks_content_fts_idx exists but is invalid "
+                "(a previous CONCURRENTLY build was likely cancelled); "
+                "dropping it so it can be rebuilt."
+            )
+            await pool.execute(
+                "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_content_fts_idx;"
+            )
+    except Exception as error:
+        logger.warning(
+            "Could not check/drop an invalid document_chunks_content_fts_idx: %s",
+            error,
+        )
+
     try:
         await pool.execute(
             """

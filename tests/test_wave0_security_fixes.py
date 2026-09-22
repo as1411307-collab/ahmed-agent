@@ -381,6 +381,38 @@ class VectorUnavailableFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["results"]), 1)
 
 
+class UploadStatusCodeTests(unittest.TestCase):
+    """Codex finding on PR #19: /files/upload's status-code branching only
+    accepted {"ready", "embedding_failed"}, so the new VECTOR_UNAVAILABLE
+    status (a successful, FTS-searchable upload with no embedding attempted
+    because pgvector isn't installed) was rejected as a 422 client error.
+    """
+
+    def test_ready_is_201(self) -> None:
+        import server
+
+        self.assertEqual(server._upload_response_status_code([{"status": "ready"}]), 201)
+
+    def test_embedding_failed_is_202(self) -> None:
+        import server
+
+        self.assertEqual(
+            server._upload_response_status_code([{"status": "embedding_failed"}]), 202
+        )
+
+    def test_vector_unavailable_is_202_not_422(self) -> None:
+        import server
+
+        self.assertEqual(
+            server._upload_response_status_code([{"status": "VECTOR_UNAVAILABLE"}]), 202
+        )
+
+    def test_unrecognized_status_is_422(self) -> None:
+        import server
+
+        self.assertEqual(server._upload_response_status_code([{"status": "empty"}]), 422)
+
+
 class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
     """Issue #14: store_document inserts with ON CONFLICT and reports races."""
 
@@ -553,6 +585,39 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("document_chunks_content_fts_idx" in s for s in pool.statements)
         )
+
+    async def test_base_schema_recovers_invalid_fts_index(self) -> None:
+        """Codex P2 finding: CREATE INDEX CONCURRENTLY IF NOT EXISTS matches
+        an existing index by name regardless of validity, so a build
+        cancelled by the command timeout leaves a permanently-ignored
+        invalid index unless it's explicitly detected and dropped first.
+        """
+        import persistence_core
+
+        class _Pool:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            async def execute(self, sql) -> None:
+                self.statements.append(sql)
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                if "indisvalid" in sql:
+                    return True
+                return None
+
+        pool = _Pool()
+        await persistence_core._ensure_base_schema(pool)
+        drop_index = next(
+            i for i, s in enumerate(pool.statements) if "DROP INDEX CONCURRENTLY" in s
+        )
+        create_index = next(
+            i
+            for i, s in enumerate(pool.statements)
+            if "CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx" in s
+        )
+        self.assertLess(drop_index, create_index)
 
 
 class AppendMessagesSequenceLockTests(unittest.IsolatedAsyncioTestCase):
