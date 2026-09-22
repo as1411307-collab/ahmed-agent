@@ -568,7 +568,7 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.statements: list[str] = []
 
-            async def execute(self, sql) -> None:
+            async def execute(self, sql, **kwargs) -> None:
                 self.statements.append(sql)
                 if "CREATE EXTENSION IF NOT EXISTS vector" in sql:
                     raise Exception('extension "vector" is not available')
@@ -576,6 +576,10 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
                     raise AssertionError(
                         "embedding column must not be attempted when pgvector is unavailable"
                     )
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                return False
 
         pool = _Pool()
         await persistence_core._ensure_base_schema(pool)
@@ -598,7 +602,7 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.statements: list[str] = []
 
-            async def execute(self, sql) -> None:
+            async def execute(self, sql, **kwargs) -> None:
                 self.statements.append(sql)
 
             async def fetchval(self, sql, *args):

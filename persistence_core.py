@@ -194,11 +194,17 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
         )
 
     try:
+        # An explicit timeout, well above the pool's 30s command_timeout:
+        # a CONCURRENTLY build on a large existing corpus can legitimately
+        # take longer than that default, and hitting it here would cancel
+        # the build (leaving another invalid index for the check above to
+        # clean up next time) instead of ever finishing.
         await pool.execute(
             """
             CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx
                 ON document_chunks USING GIN (to_tsvector('simple', content));
-            """
+            """,
+            timeout=300,
         )
     except Exception as error:
         logger.warning(
