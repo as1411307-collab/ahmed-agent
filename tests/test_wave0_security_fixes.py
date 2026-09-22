@@ -543,6 +543,24 @@ class AppendMessagesSequenceLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("agent_sessions", connection.statements[lock_index])
 
 
+class AgentDepsAnnotationsTests(unittest.TestCase):
+    """Codex finding on PR #19: AgentDeps.tool_event_recorder's annotation
+    references Callable/Awaitable, so anything that resolves this exported
+    dataclass's type hints (typing.get_type_hints, framework/schema
+    introspection) needs those names importable from agent_consts, even
+    though `from __future__ import annotations` means nothing evaluates
+    them at class-definition time.
+    """
+
+    def test_get_type_hints_resolves_without_nameerror(self) -> None:
+        import typing
+
+        import agent_consts
+
+        hints = typing.get_type_hints(agent_consts.AgentDeps)
+        self.assertIn("tool_event_recorder", hints)
+
+
 class ProviderModelCacheTests(unittest.TestCase):
     """Issue #15: provider model instances are shared per credential set."""
 
