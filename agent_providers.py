@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -16,6 +16,7 @@ from agent_consts import (
     GEMINI_MODEL,
     OPENAI_MODEL,
     TRANSIENT_PROVIDER_STATUS_CODES,
+    ProviderName,
     logger,
 )
 from config import GEMINI_429_CIRCUIT_THRESHOLD, GEMINI_429_COOLDOWN_SECONDS

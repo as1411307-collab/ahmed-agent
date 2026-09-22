@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -14,14 +13,10 @@ from uuid import uuid4
 import asyncpg
 
 from persistence import (
-    append_new_messages,
     claim_orphaned_run,
     create_pending_action,
-    create_run,
-    ensure_session,
     finish_run,
     load_run_recovery,
-    mark_orphaned_runs,
     record_run_checkpoint,
     run_message_count,
 )

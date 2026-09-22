@@ -20,7 +20,21 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "httpx",
+    "ruff",
 ]
+
+[tool.ruff.lint]
+# Real defects only: syntax errors, undefined names, unused imports/vars --
+# not a style linter. See CLAUDE.md's "Handling automated review findings"
+# for why this is scoped this narrowly.
+select = ["E9", "F63", "F7", "F82", "F401", "F841"]
+
+[tool.ruff.lint.per-file-ignores]
+# Wave 3 (#8) re-export facades: their "unused" imports are the public API
+# other modules import from them, not dead code.
+"persistence.py" = ["F401"]
+"agent_core.py" = ["F401"]
+"evaluation_baseline.py" = ["F401"]
 
 [build-system]
 requires = ["setuptools>=68"]

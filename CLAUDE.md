@@ -126,3 +126,14 @@ Tool permissions and risk levels live in `policy.py`.
 - This repo is developed via pull request with automated Codex review on
   every push; verify every review finding against the actual code/behavior
   before fixing or pushing back on it — don't accept or dismiss blindly.
+
+## Handling automated review findings (Codex)
+
+- Fix: anything reproducible in this project's real deployment (single owner,
+  single process, one PostgreSQL), any security/data-integrity issue, and
+  anything that breaks CI or startup. Reproduce it first when possible.
+- Decline with a written reason (and git/test evidence): scenarios that need
+  multiple workers/tenants, adversarial DB admins, or timings that cannot
+  occur in this deployment. Declining is a valid outcome, not a failure.
+- Max 3 review rounds per PR. After that, remaining non-P1 findings go into a
+  follow-up issue instead of more commits on the same PR.

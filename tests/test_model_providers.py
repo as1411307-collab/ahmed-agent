@@ -10,7 +10,6 @@ from pydantic_ai.exceptions import ModelHTTPError
 
 from pydantic_ai.models.openai import OpenAIChatModel
 
-import agent_core
 from agent_core import (
     AgentCoreError,
     EvidenceFirstContext,

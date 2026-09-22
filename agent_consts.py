@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from config import AHMED_OPENAI_MODEL, AHMED_PRIMARY_MODEL
+from request_routing import RouteDecision
 
 
 logger = logging.getLogger("ahmed_agent.core")

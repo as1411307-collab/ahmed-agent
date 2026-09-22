@@ -5,7 +5,6 @@ import json
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from urllib.error import HTTPError
 
 import github_search
 from github_search import (
@@ -13,7 +12,6 @@ from github_search import (
     GitHubProviderError,
     GitHubSearchService,
     _GitHubResponse,
-    github_health,
 )
 
 
