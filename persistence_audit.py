@@ -8,6 +8,17 @@ import asyncpg
 
 from persistence_core import PersistenceError, _canonical_json, _get_pool
 
+# Arbitrary bigint used as a Postgres advisory-lock key: serializes the whole
+# read-head/compute-hash/insert sequence below across every concurrent
+# _append_audit_event call, regardless of session/run. Without it, two
+# transactions calling "SELECT event_hash ... ORDER BY event_id DESC LIMIT 1
+# FOR UPDATE" concurrently both read the same (not-yet-superseded) head row
+# before either commits its INSERT -- FOR UPDATE only blocks on an existing
+# locked row, and the row each transaction would insert doesn't exist yet, so
+# nothing here actually prevents both from computing previous_hash against
+# the same parent and forking the chain.
+AUDIT_CHAIN_LOCK_KEY = 7_246_000_001
+
 
 async def _append_audit_event(
     connection: asyncpg.Connection,
@@ -20,6 +31,11 @@ async def _append_audit_event(
     status: str,
     safe_metadata: dict[str, Any] | None,
 ) -> int:
+    # Must be the first statement: every one of this function's 12 call
+    # sites already runs inside `connection.transaction()`, so this
+    # transaction-scoped advisory lock is held until that transaction
+    # commits or rolls back, serializing the read-modify-write below.
+    await connection.execute("SELECT pg_advisory_xact_lock($1)", AUDIT_CHAIN_LOCK_KEY)
     previous_hash = await connection.fetchval(
         """
         SELECT event_hash
