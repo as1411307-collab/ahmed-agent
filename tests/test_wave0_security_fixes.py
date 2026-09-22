@@ -583,6 +583,8 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
 
         pool = _Pool()
         await persistence_core._ensure_base_schema(pool)
+        assert persistence_core._fts_index_task is not None
+        await persistence_core._fts_index_task
         self.assertTrue(
             any("CREATE TABLE IF NOT EXISTS agent_sessions" in s for s in pool.statements)
         )
@@ -613,6 +615,8 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
 
         pool = _Pool()
         await persistence_core._ensure_base_schema(pool)
+        assert persistence_core._fts_index_task is not None
+        await persistence_core._fts_index_task
         drop_index = next(
             i for i, s in enumerate(pool.statements) if "DROP INDEX CONCURRENTLY" in s
         )

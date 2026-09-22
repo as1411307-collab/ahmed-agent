@@ -19,6 +19,7 @@ _pool: asyncpg.Pool | None = None
 _schema_ready = False
 _schema_lock = asyncio.Lock()
 _vector_storage_available = False
+_fts_index_task: asyncio.Task[None] | None = None
 TEST_RETENTION_SCOPES = ("fault_injection", "probe")
 RETENTION_POLICY = {
     "completed_checkpoint_days": 30,
@@ -30,6 +31,77 @@ RETENTION_POLICY = {
 
 def _canonical_json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+async def _build_fts_index(pool: asyncpg.Pool) -> None:
+    """Build document_chunks' FTS index in the background (see the call site
+    in _ensure_base_schema for why this must never be awaited from there).
+
+    CONCURRENTLY and its own (non-multi-statement) execute() calls, on
+    purpose: a plain CREATE INDEX would hold a lock that blocks writes for
+    the whole build. Failure here is logged and tolerated -- FTS just uses
+    a full scan until it eventually succeeds.
+
+    A CONCURRENTLY build that gets cancelled (a timeout, or the process
+    dying) leaves an INVALID index cataloged under this name -- the
+    planner never uses it, and CREATE INDEX CONCURRENTLY IF NOT EXISTS
+    matches on the name regardless of validity, so it would silently skip
+    forever without the explicit check below.
+    """
+    try:
+        # Resolve 'document_chunks' via ::regclass (the same search_path
+        # resolution the unqualified "ON document_chunks" below uses)
+        # instead of matching the index name alone: a bare relname match
+        # would also catch a same-named index belonging to an unrelated
+        # schema's document_chunks table on a Postgres instance shared by
+        # multiple apps/schemas, wrongly dropping and rebuilding our own
+        # valid index on every startup while never touching the actual
+        # invalid one.
+        invalid_index_exists = await pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                WHERE i.indrelid = 'document_chunks'::regclass
+                  AND c.relname = 'document_chunks_content_fts_idx'
+                  AND NOT i.indisvalid
+            )
+            """
+        )
+        if invalid_index_exists:
+            logger.warning(
+                "document_chunks_content_fts_idx exists but is invalid "
+                "(a previous CONCURRENTLY build was likely cancelled); "
+                "dropping it so it can be rebuilt."
+            )
+            await pool.execute(
+                "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_content_fts_idx;"
+            )
+    except Exception as error:
+        logger.warning(
+            "Could not check/drop an invalid document_chunks_content_fts_idx: %s",
+            error,
+        )
+        return
+
+    try:
+        # An explicit timeout, well above the pool's 30s command_timeout:
+        # this now runs in the background rather than gating any request,
+        # so there's no reason to cut off a legitimately slow build on a
+        # large existing corpus.
+        await pool.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx
+                ON document_chunks USING GIN (to_tsvector('simple', content));
+            """,
+            timeout=300,
+        )
+    except Exception as error:
+        logger.warning(
+            "Could not build document_chunks_content_fts_idx; FTS queries "
+            "will use a full scan until this succeeds: %s",
+            error,
+        )
 
 
 async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
@@ -152,66 +224,16 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
     except Exception as error:
         raise PersistenceError("Could not initialize the base persistence schema.") from error
 
-    # CONCURRENTLY and its own (non-multi-statement) execute() calls, on
-    # purpose: on an install that already has a populated document_chunks
-    # (e.g. upgrading from a version of this schema without this index), a
-    # plain CREATE INDEX would hold a lock that blocks writes for the whole
-    # build, and folding it into the block above would let the shared
-    # 30s command_timeout cancel it and leave _schema_ready permanently
-    # false. Failure here is logged and tolerated -- FTS queries just fall
-    # back to a full scan until it eventually succeeds -- rather than
-    # blocking every persistence operation on it.
-    #
-    # A CONCURRENTLY build that gets cancelled (that same timeout, or the
-    # process dying) leaves an INVALID index cataloged under this name --
-    # the planner never uses it, and CREATE INDEX CONCURRENTLY IF NOT
-    # EXISTS matches on the name regardless of validity, so it would
-    # silently skip forever without the explicit check below.
-    try:
-        invalid_index_exists = await pool.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM pg_class c
-                JOIN pg_index i ON i.indexrelid = c.oid
-                WHERE c.relname = 'document_chunks_content_fts_idx'
-                  AND NOT i.indisvalid
-            )
-            """
-        )
-        if invalid_index_exists:
-            logger.warning(
-                "document_chunks_content_fts_idx exists but is invalid "
-                "(a previous CONCURRENTLY build was likely cancelled); "
-                "dropping it so it can be rebuilt."
-            )
-            await pool.execute(
-                "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_content_fts_idx;"
-            )
-    except Exception as error:
-        logger.warning(
-            "Could not check/drop an invalid document_chunks_content_fts_idx: %s",
-            error,
-        )
-
-    try:
-        # An explicit timeout, well above the pool's 30s command_timeout:
-        # a CONCURRENTLY build on a large existing corpus can legitimately
-        # take longer than that default, and hitting it here would cancel
-        # the build (leaving another invalid index for the check above to
-        # clean up next time) instead of ever finishing.
-        await pool.execute(
-            """
-            CREATE INDEX CONCURRENTLY IF NOT EXISTS document_chunks_content_fts_idx
-                ON document_chunks USING GIN (to_tsvector('simple', content));
-            """,
-            timeout=300,
-        )
-    except Exception as error:
-        logger.warning(
-            "Could not build document_chunks_content_fts_idx; FTS queries "
-            "will use a full scan until this succeeds: %s",
-            error,
-        )
+    # Fire-and-forget, on purpose: on an install that already has a
+    # populated document_chunks (e.g. upgrading from a version of this
+    # schema without this index), the CONCURRENTLY build can take a while,
+    # and awaiting it here would hold _schema_lock for that whole time --
+    # blocking the first request, and every concurrent request behind it,
+    # on a one-time migration. FTS just uses a full scan until it finishes
+    # in the background.
+    global _fts_index_task
+    if _fts_index_task is None or _fts_index_task.done():
+        _fts_index_task = asyncio.create_task(_build_fts_index(pool))
 
     global _vector_storage_available
     vector_storage_ready = False
