@@ -35,6 +35,118 @@ def _canonical_json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
+    """Create the tables every other table here is ALTERed or joined against.
+
+    These six tables (agent_sessions, agent_runs, agent_messages, tool_events,
+    documents, document_chunks) were never defined anywhere in this repo --
+    they only existed because the original deployment's Postgres instance had
+    them provisioned out-of-band. A fresh database (e.g. a new VPS) had no way
+    to create them. This intentionally matches the exact shape every query in
+    persistence_runs.py/persistence_docs.py/persistence_events.py already
+    assumes (see those files for the column-by-column usage), including no
+    foreign keys between the operational tables -- the same looseness the
+    rest of this schema already uses (pending_actions/agent_run_checkpoints
+    also carry a bare run_id with no REFERENCES), which is what lets
+    cleanup_retention/cleanup_evaluation_run delete across these tables in a
+    specific manual order without fighting FK constraints.
+    """
+
+    try:
+        await pool.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    except Exception as error:
+        raise PersistenceError(
+            "The Postgres 'vector' extension (pgvector) is required and could "
+            "not be created. Install it on the Postgres server (or ask your "
+            "provider to enable it), then restart."
+        ) from error
+
+    try:
+        await pool.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                session_id UUID PRIMARY KEY,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                run_id UUID PRIMARY KEY,
+                session_id UUID NOT NULL,
+                status TEXT NOT NULL,
+                user_prompt TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                error_code TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                finished_at TIMESTAMPTZ
+            );
+
+            CREATE INDEX IF NOT EXISTS agent_runs_session_idx
+                ON agent_runs (session_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                message_id BIGSERIAL PRIMARY KEY,
+                session_id UUID NOT NULL,
+                run_id UUID NOT NULL,
+                sequence_number INTEGER NOT NULL,
+                message_json JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (session_id, sequence_number)
+            );
+
+            CREATE INDEX IF NOT EXISTS agent_messages_run_idx
+                ON agent_messages (run_id);
+
+            CREATE TABLE IF NOT EXISTS tool_events (
+                id BIGSERIAL PRIMARY KEY,
+                run_id UUID NOT NULL,
+                tool_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                duration_ms INTEGER,
+                safe_metadata JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS tool_events_run_idx
+                ON tool_events (run_id, id);
+
+            CREATE TABLE IF NOT EXISTS documents (
+                document_id UUID PRIMARY KEY,
+                filename TEXT NOT NULL,
+                mime_type TEXT,
+                source_type TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                embedding_model TEXT,
+                embedding_dimension INTEGER,
+                embedding_version TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                chunk_id BIGSERIAL PRIMARY KEY,
+                document_id UUID NOT NULL REFERENCES documents(document_id)
+                    ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                page_number INTEGER,
+                content TEXT NOT NULL,
+                metadata JSONB,
+                embedding vector,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS document_chunks_document_idx
+                ON document_chunks (document_id, chunk_index);
+            """
+        )
+    except Exception as error:
+        raise PersistenceError("Could not initialize the base persistence schema.") from error
+
+
 async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
     global _schema_ready
     if _schema_ready:
@@ -42,6 +154,7 @@ async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
     async with _schema_lock:
         if _schema_ready:
             return
+        await _ensure_base_schema(pool)
         try:
             await pool.execute(
                 """
