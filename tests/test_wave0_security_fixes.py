@@ -4,6 +4,7 @@ import hashlib
 import json
 import socket
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -375,6 +376,113 @@ class VectorUnavailableFallbackTests(unittest.IsolatedAsyncioTestCase):
         search_vector_mock.assert_not_awaited()
         self.assertEqual(result["retrieval_mode"], "FTS_FALLBACK")
         self.assertEqual(len(result["results"]), 1)
+
+
+class MyFilesPreflightIsolationTests(unittest.IsolatedAsyncioTestCase):
+    """Audit finding: the evidence preflight runs before the agent, so the
+    MY_FILES agent not having web_search registered did not stop the message
+    text from being sent to the external search provider."""
+
+    async def test_my_files_preflight_never_calls_web_search(self) -> None:
+        import agent_evidence
+
+        with patch.object(
+            agent_evidence, "existing_web_search", new=AsyncMock()
+        ) as web_mock, patch.object(
+            agent_evidence,
+            "existing_my_files_search",
+            new=AsyncMock(return_value={"results": [], "message": "none"}),
+        ) as files_mock:
+            context = await agent_evidence.prepare_evidence_first_context(
+                "ما التحديثات في الملف المرفوع؟",
+                scope="MY_FILES",
+            )
+        web_mock.assert_not_awaited()
+        files_mock.assert_awaited_once()
+        self.assertEqual(context.external_sources, ())
+
+
+class OriginalSourceProtectionTests(unittest.IsolatedAsyncioTestCase):
+    """Audit finding: once store_document had committed a document referencing
+    the original, a failed extraction_status update still deleted the
+    original's row and bytes, orphaning the stored document."""
+
+    async def _ingest(self, *, store, status_update, chunks):
+        import my_files
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                my_files, "find_document_by_hash", new=AsyncMock(return_value=None)
+            ))
+            stack.enter_context(patch.object(
+                my_files, "create_original_source", new=AsyncMock()
+            ))
+            stack.enter_context(patch.object(
+                my_files, "extract_document", return_value=["hello"]
+            ))
+            stack.enter_context(patch.object(
+                my_files, "build_chunks", return_value=chunks
+            ))
+            stack.enter_context(patch.object(my_files, "store_document", new=store))
+            stack.enter_context(patch.object(
+                my_files, "update_original_source_extraction_status", new=status_update
+            ))
+            stack.enter_context(patch.object(
+                my_files, "vector_storage_available", new=AsyncMock(return_value=False)
+            ))
+            delete_mock = stack.enter_context(patch.object(
+                my_files, "delete_original_source", new=AsyncMock()
+            ))
+            try:
+                result = await my_files.ingest_document(
+                    document_id="66666666-6666-6666-6666-666666666666",
+                    filename="notes.md",
+                    mime_type="text/markdown",
+                    data=b"hello world",
+                )
+            except my_files.PersistenceError as error:
+                return error, delete_mock
+        return result, delete_mock
+
+    def _chunk(self):
+        return SimpleNamespace(
+            chunk_index=0, page_number=None, content="hello world", metadata={}
+        )
+
+    async def test_status_failure_after_commit_keeps_original(self) -> None:
+        import my_files
+
+        result, delete_mock = await self._ingest(
+            store=AsyncMock(return_value=True),
+            status_update=AsyncMock(side_effect=my_files.PersistenceError("down")),
+            chunks=[self._chunk()],
+        )
+        delete_mock.assert_not_awaited()
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result["original_available"])
+
+    async def test_status_failure_after_commit_keeps_original_for_empty_file(self) -> None:
+        import my_files
+
+        result, delete_mock = await self._ingest(
+            store=AsyncMock(return_value=True),
+            status_update=AsyncMock(side_effect=my_files.PersistenceError("down")),
+            chunks=[],
+        )
+        delete_mock.assert_not_awaited()
+        self.assertEqual(result["status"], "empty")
+        self.assertTrue(result["original_available"])
+
+    async def test_store_failure_still_deletes_original(self) -> None:
+        import my_files
+
+        result, delete_mock = await self._ingest(
+            store=AsyncMock(side_effect=my_files.PersistenceError("down")),
+            status_update=AsyncMock(),
+            chunks=[self._chunk()],
+        )
+        self.assertIsInstance(result, my_files.PersistenceError)
+        delete_mock.assert_awaited_once()
 
 
 class UploadStatusCodeTests(unittest.TestCase):

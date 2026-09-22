@@ -51,6 +51,17 @@ def classify_request(
     if not normalized:
         return RouteDecision(RequestCapability.GENERAL, (), False)
 
+    # Scope is an authorization boundary, not a hint. Checked before any
+    # keyword matching: otherwise an ordinary MY_FILES question containing a
+    # word like "تحديثات" or "template" routed to external web research, and
+    # the evidence preflight sent the message text to the search provider.
+    if scope == "MY_FILES":
+        return RouteDecision(
+            RequestCapability.MY_FILES,
+            ("search_my_files", "inspect_source_of_truth"),
+            True,
+        )
+
     external_web_terms = (
         "web search",
         "web research",
@@ -151,7 +162,7 @@ def classify_request(
         "source of truth",
         "مصدر الحقيقة",
     )
-    if scope == "MY_FILES" or _contains_any(normalized, my_files_terms):
+    if _contains_any(normalized, my_files_terms):
         return RouteDecision(
             RequestCapability.MY_FILES,
             ("search_my_files", "inspect_source_of_truth"),
