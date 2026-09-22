@@ -11,7 +11,11 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from persistence import delete_documents_for_source_ids, delete_original_source
-from server import _UPLOAD_DEGRADED_STATUSES, _UPLOAD_OK_STATUS
+from server import (
+    _UPLOAD_DEGRADED_STATUSES,
+    _UPLOAD_OK_STATUS,
+    _upload_response_status_code,
+)
 
 
 def redact_evaluation_text(value: str) -> str:
@@ -305,13 +309,13 @@ async def _run_aa_rc_018_upload_e2e(
     )
     cleanup = await _cleanup_uploaded_sources(source_ids)
     supported_ready = (
-        supported_status in {201, 202}
-        and len(supported_results) == 4
+        len(supported_results) == 4
         and all(
             isinstance(item, dict)
             and item.get("status") in ({_UPLOAD_OK_STATUS} | _UPLOAD_DEGRADED_STATUSES)
             for item in supported_results
         )
+        and supported_status == _upload_response_status_code(supported_results)
     )
     unsafe_rejected = unsafe_status == 415 and (
         unsafe_payload.get("code") == "UNSAFE_FILENAME"

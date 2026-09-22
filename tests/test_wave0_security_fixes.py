@@ -582,7 +582,11 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
                 return False
 
         pool = _Pool()
-        await persistence_core._ensure_base_schema(pool)
+        persistence_core._schema_ready = False
+        try:
+            await persistence_core._ensure_policy_schema(pool)
+        finally:
+            persistence_core._schema_ready = False
         assert persistence_core._fts_index_task is not None
         await persistence_core._fts_index_task
         self.assertTrue(
@@ -614,7 +618,11 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
         pool = _Pool()
-        await persistence_core._ensure_base_schema(pool)
+        persistence_core._schema_ready = False
+        try:
+            await persistence_core._ensure_policy_schema(pool)
+        finally:
+            persistence_core._schema_ready = False
         assert persistence_core._fts_index_task is not None
         await persistence_core._fts_index_task
         drop_index = next(

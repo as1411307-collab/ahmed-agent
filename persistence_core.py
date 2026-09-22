@@ -35,7 +35,8 @@ def _canonical_json(value: dict[str, Any]) -> str:
 
 async def _build_fts_index(pool: asyncpg.Pool) -> None:
     """Build document_chunks' FTS index in the background (see the call site
-    in _ensure_base_schema for why this must never be awaited from there).
+    at the end of _ensure_policy_schema for why this must never be awaited
+    from there, and why it's only fired after all schema DDL completes).
 
     CONCURRENTLY and its own (non-multi-statement) execute() calls, on
     purpose: a plain CREATE INDEX would hold a lock that blocks writes for
@@ -224,17 +225,6 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
     except Exception as error:
         raise PersistenceError("Could not initialize the base persistence schema.") from error
 
-    # Fire-and-forget, on purpose: on an install that already has a
-    # populated document_chunks (e.g. upgrading from a version of this
-    # schema without this index), the CONCURRENTLY build can take a while,
-    # and awaiting it here would hold _schema_lock for that whole time --
-    # blocking the first request, and every concurrent request behind it,
-    # on a one-time migration. FTS just uses a full scan until it finishes
-    # in the background.
-    global _fts_index_task
-    if _fts_index_task is None or _fts_index_task.done():
-        _fts_index_task = asyncio.create_task(_build_fts_index(pool))
-
     global _vector_storage_available
     vector_storage_ready = False
     if pgvector_available:
@@ -418,6 +408,21 @@ async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:
                 "(existing duplicate file_hash rows?): %s",
                 error,
             )
+
+        # Fire-and-forget, and only now that every ALTER TABLE on
+        # document_chunks (the embedding column above, source_id/
+        # source_sha256 here) has completed: CREATE INDEX CONCURRENTLY
+        # takes a lock that conflicts with ALTER TABLE's ACCESS EXCLUSIVE
+        # lock on the same table, so starting the build any earlier could
+        # have it contend with -- and stall behind, or block -- schema
+        # DDL that's still in flight on document_chunks. Awaiting it here
+        # would defeat the point (blocking _schema_lock on a one-time
+        # migration), so it still just runs in the background; FTS uses a
+        # full scan until it finishes.
+        global _fts_index_task
+        if _fts_index_task is None or _fts_index_task.done():
+            _fts_index_task = asyncio.create_task(_build_fts_index(pool))
+
         _schema_ready = True
 
 
