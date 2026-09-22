@@ -75,8 +75,14 @@ async def _build_fts_index(pool: asyncpg.Pool) -> None:
                 "(a previous CONCURRENTLY build was likely cancelled); "
                 "dropping it so it can be rebuilt."
             )
+            # Same explicit timeout as the CREATE below, for the same
+            # reason: this runs in the background, not on any request
+            # path, so there's no reason to let the pool's 30s default
+            # cut off a DROP CONCURRENTLY that's waiting on other
+            # transactions to release their snapshots.
             await pool.execute(
-                "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_content_fts_idx;"
+                "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_content_fts_idx;",
+                timeout=300,
             )
     except Exception as error:
         logger.warning(
