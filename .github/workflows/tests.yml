@@ -11,8 +11,49 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Install dependencies
-        run: |
-          pip install ".[dev]" || pip install pytest pytest-asyncio httpx pydantic pydantic-ai asyncpg fastembed starlette uvicorn python-docx pypdf mcp
+        run: uv sync --locked --extra dev
+      - name: Lint (ruff, real defects only)
+        run: uv run ruff check .
       - name: Run tests
-        run: python -m pytest tests/ -q
+        run: uv run pytest tests/ -q
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ahmed_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ahmed_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ahmed_test
+      AHMED_RUN_RECOVERY_E2E: "1"
+      AHMED_OWNER_TOKEN: ci-owner-token-not-secret
+      GEMINI_API_KEY: ci-dummy-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v10.1.0
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+      - name: Fresh-database bootstrap test
+        run: uv run pytest tests/test_fresh_database_bootstrap.py -q
+      - name: Audit hash-chain concurrency test
+        run: uv run pytest tests/test_audit_chain_concurrency.py -q
+      - name: Recovery fault-injection E2E test
+        run: uv run pytest tests/test_recovery_fault_injection.py -q
+      - name: Full suite (with a real database)
+        run: uv run pytest tests/ -q
