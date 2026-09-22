@@ -445,6 +445,103 @@ class StoreDocumentUniqueTests(unittest.IsolatedAsyncioTestCase):
             any("documents_file_hash_key" in s for s in pool.statements)
         )
 
+    async def test_base_schema_tolerates_missing_pgvector(self) -> None:
+        """A Postgres without pgvector must still get the core tables and the
+        FTS index (Codex P1 finding: startup used to hard-fail on any
+        persistence operation when the 'vector' extension wasn't installed).
+        """
+        import persistence_core
+
+        class _Pool:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            async def execute(self, sql) -> None:
+                self.statements.append(sql)
+                if "CREATE EXTENSION IF NOT EXISTS vector" in sql:
+                    raise Exception('extension "vector" is not available')
+                if "ADD COLUMN IF NOT EXISTS embedding vector" in sql:
+                    raise AssertionError(
+                        "embedding column must not be attempted when pgvector is unavailable"
+                    )
+
+        pool = _Pool()
+        await persistence_core._ensure_base_schema(pool)
+        self.assertTrue(
+            any("CREATE TABLE IF NOT EXISTS agent_sessions" in s for s in pool.statements)
+        )
+        self.assertTrue(
+            any("document_chunks_content_fts_idx" in s for s in pool.statements)
+        )
+
+
+class AppendMessagesSequenceLockTests(unittest.IsolatedAsyncioTestCase):
+    """Codex P2 finding: sequence allocation must be serialized per session,
+    or two concurrent runs can compute the same MAX(sequence_number) and one
+    loses its response to the new UNIQUE (session_id, sequence_number)
+    constraint.
+    """
+
+    async def test_locks_session_row_before_computing_next_sequence(self) -> None:
+        import persistence_runs
+
+        class _Transaction:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _Connection:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def transaction(self) -> _Transaction:
+                return _Transaction()
+
+            async def execute(self, sql, *args) -> None:
+                self.statements.append(sql)
+
+            async def fetchval(self, sql, *args):
+                self.statements.append(sql)
+                return 1
+
+        class _Acquire:
+            def __init__(self, connection) -> None:
+                self._connection = connection
+
+            async def __aenter__(self):
+                return self._connection
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _Pool:
+            def __init__(self, connection) -> None:
+                self._connection = connection
+
+            def acquire(self) -> _Acquire:
+                return _Acquire(self._connection)
+
+        connection = _Connection()
+        with patch.object(
+            persistence_runs, "_get_pool", new=AsyncMock(return_value=_Pool(connection))
+        ):
+            await persistence_runs.append_new_messages(
+                session_id="11111111-1111-1111-1111-111111111111",
+                run_id="22222222-2222-2222-2222-222222222222",
+                new_messages_json=b'[{"role": "user", "content": "hi"}]',
+            )
+
+        lock_index = next(
+            i for i, s in enumerate(connection.statements) if "FOR UPDATE" in s
+        )
+        max_index = next(
+            i for i, s in enumerate(connection.statements) if "MAX(sequence_number)" in s
+        )
+        self.assertLess(lock_index, max_index)
+        self.assertIn("agent_sessions", connection.statements[lock_index])
+
 
 class ProviderModelCacheTests(unittest.TestCase):
     """Issue #15: provider model instances are shared per credential set."""

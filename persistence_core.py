@@ -46,16 +46,26 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
     also carry a bare run_id with no REFERENCES), which is what lets
     cleanup_retention/cleanup_evaluation_run delete across these tables in a
     specific manual order without fighting FK constraints.
+
+    pgvector is optional here, matching the existing degraded-mode contract
+    (doctor.py reports DEGRADED, not down, when pgvector is missing): the
+    relational tables and the document_chunks FTS index are always created,
+    and only the document_chunks.embedding column is skipped when the
+    'vector' extension can't be installed, so sessions/runs/messages/audit
+    and full-text MY_FILES search keep working without it.
     """
 
+    pgvector_available = True
     try:
         await pool.execute("CREATE EXTENSION IF NOT EXISTS vector;")
     except Exception as error:
-        raise PersistenceError(
-            "The Postgres 'vector' extension (pgvector) is required and could "
-            "not be created. Install it on the Postgres server (or ask your "
-            "provider to enable it), then restart."
-        ) from error
+        pgvector_available = False
+        logger.warning(
+            "Postgres 'vector' extension (pgvector) is not available; "
+            "continuing without it. Vector search stays disabled and "
+            "MY_FILES search falls back to full-text search only: %s",
+            error,
+        )
 
     try:
         await pool.execute(
@@ -131,16 +141,30 @@ async def _ensure_base_schema(pool: asyncpg.Pool) -> None:
                 page_number INTEGER,
                 content TEXT NOT NULL,
                 metadata JSONB,
-                embedding vector,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
             CREATE INDEX IF NOT EXISTS document_chunks_document_idx
                 ON document_chunks (document_id, chunk_index);
+
+            CREATE INDEX IF NOT EXISTS document_chunks_content_fts_idx
+                ON document_chunks USING GIN (to_tsvector('simple', content));
             """
         )
     except Exception as error:
         raise PersistenceError("Could not initialize the base persistence schema.") from error
+
+    if pgvector_available:
+        try:
+            await pool.execute(
+                "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector;"
+            )
+        except Exception as error:
+            logger.warning(
+                "Could not add the pgvector 'embedding' column to "
+                "document_chunks; vector search stays disabled: %s",
+                error,
+            )
 
 
 async def _ensure_policy_schema(pool: asyncpg.Pool) -> None:

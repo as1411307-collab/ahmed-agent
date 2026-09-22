@@ -738,6 +738,14 @@ async def append_new_messages(
     try:
         async with pool.acquire() as connection:
             async with connection.transaction():
+                await connection.execute(
+                    """
+                    SELECT session_id FROM agent_sessions
+                    WHERE session_id = $1::uuid
+                    FOR UPDATE
+                    """,
+                    session_id,
+                )
                 next_sequence = await connection.fetchval(
                     """
                     SELECT COALESCE(MAX(sequence_number), 0) + 1
