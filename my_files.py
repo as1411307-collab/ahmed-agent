@@ -321,6 +321,25 @@ def _duplicate_ingest_result(
     }
 
 
+async def _set_source_status_after_commit(source_id: str, status: str) -> None:
+    # Only called once the document row referencing this source is committed,
+    # so the original must not be deleted from here on. extraction_status is
+    # informational (reported by inspect_source_of_truth, never used for an
+    # access decision), so a failed update is logged rather than failing an
+    # upload that has in fact been stored.
+    try:
+        await update_original_source_extraction_status(
+            source_id=source_id,
+            status=status,
+        )
+    except PersistenceError as error:
+        logger.warning(
+            "original source status update failed status=%s error_type=%s",
+            status,
+            type(error).__name__,
+        )
+
+
 async def ingest_document(
     *,
     document_id: str,
@@ -395,22 +414,19 @@ async def ingest_document(
                 source_id=source_id,
                 source_sha256=file_hash,
             )
-            if not stored:
-                # Lost the dedup race: another upload of the same bytes won.
-                await delete_original_source(source_id=source_id)
-                winner = await find_document_by_hash(file_hash)
-                if winner is not None:
-                    return _duplicate_ingest_result(winner, file_hash, filename)
-                raise PersistenceError(
-                    "Duplicate document conflict but no existing row found."
-                )
-            await update_original_source_extraction_status(
-                source_id=source_id,
-                status=error.status,
-            )
         except PersistenceError:
             await delete_original_source(source_id=source_id)
             raise
+        if not stored:
+            # Lost the dedup race: another upload of the same bytes won.
+            await delete_original_source(source_id=source_id)
+            winner = await find_document_by_hash(file_hash)
+            if winner is not None:
+                return _duplicate_ingest_result(winner, file_hash, filename)
+            raise PersistenceError(
+                "Duplicate document conflict but no existing row found."
+            )
+        await _set_source_status_after_commit(source_id, error.status)
         return {
             "duplicate": False,
             "document_id": document_id,
@@ -433,22 +449,19 @@ async def ingest_document(
             source_id=source_id,
             source_sha256=file_hash,
         )
-        if not stored:
-            # Lost the dedup race: another upload of the same bytes won.
-            await delete_original_source(source_id=source_id)
-            winner = await find_document_by_hash(file_hash)
-            if winner is not None:
-                return _duplicate_ingest_result(winner, file_hash, filename)
-            raise PersistenceError(
-                "Duplicate document conflict but no existing row found."
-            )
-        await update_original_source_extraction_status(
-            source_id=source_id,
-            status="fts_ready",
-        )
     except PersistenceError:
         await delete_original_source(source_id=source_id)
         raise
+    if not stored:
+        # Lost the dedup race: another upload of the same bytes won.
+        await delete_original_source(source_id=source_id)
+        winner = await find_document_by_hash(file_hash)
+        if winner is not None:
+            return _duplicate_ingest_result(winner, file_hash, filename)
+        raise PersistenceError(
+            "Duplicate document conflict but no existing row found."
+        )
+    await _set_source_status_after_commit(source_id, "fts_ready")
 
     embedding_status = "embedding_failed"
     embedding_metrics: dict[str, int | float | str] = {}
