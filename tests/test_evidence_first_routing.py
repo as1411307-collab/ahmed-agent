@@ -107,6 +107,24 @@ class EvidenceFirstRoutingTests(unittest.TestCase):
         self.assertIn("search_my_files", route.required_capabilities)
         self.assertNotIn("web_search", route.required_capabilities)
 
+    def test_my_files_scope_never_routes_outside_my_files(self) -> None:
+        """Audit finding: in MY_FILES scope, ordinary file questions containing
+        an external-research keyword were routed to web search, and the
+        preflight sent the message text to the external search provider."""
+        messages = (
+            "ما التحديثات في الملف المرفوع؟",
+            "لخص القالب الموجود في ملفاتي",
+            "هل الملف جاهز؟",
+            "what does the template in my upload say",
+            "ابحث على الويب عن محتوى هذا الملف",
+            "راجع حالة المشروع كما في ملفاتي",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                route = classify_request(message, scope="MY_FILES")
+                self.assertEqual(route.capability, RequestCapability.MY_FILES)
+                self.assertNotIn("web_search", route.required_capabilities)
+
     def test_explicit_web_research_requires_real_web_search(self) -> None:
         route = classify_request("ابحث على الويب عن أحدث توثيق وقارن المصادر")
         self.assertEqual(route.capability, RequestCapability.EXTERNAL_WEB_RESEARCH)

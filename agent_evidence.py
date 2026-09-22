@@ -450,7 +450,10 @@ async def prepare_evidence_first_context(
         except Exception as error:
             await add_failure("search_my_files", "MY_FILES search", error)
 
-    if route.capability == RequestCapability.EXTERNAL_WEB_RESEARCH:
+    # The only external network call in the preflight. Guarded on scope as
+    # well as route so that MY_FILES can never reach it, even if routing
+    # changes later: no external calls are allowed in that scope.
+    if route.capability == RequestCapability.EXTERNAL_WEB_RESEARCH and scope == "WEB":
         try:
             result = await existing_web_search(
                 query=user_message.strip(),
