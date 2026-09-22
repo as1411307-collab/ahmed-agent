@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import json
-import socket
 import time
 from uuid import UUID, uuid4
 from pathlib import Path

@@ -17,7 +17,6 @@ from eval_metrics import resume_rate_limited_baseline
 from eval_schema import (
     CASE_CAPABILITY_OVERRIDES,
     DATASET_PATH,
-    SEMANTIC_RUBRIC,
     TOOL_NAME_MAPPING,
     import_real_cases,
     load_case_document,

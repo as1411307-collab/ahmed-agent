@@ -6,7 +6,6 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from persistence import (
-    PersistenceError,
     create_original_source as _create_original_source,
     delete_original_source as _delete_original_source,
     read_authorized_original_source as _read_authorized_original_source,
