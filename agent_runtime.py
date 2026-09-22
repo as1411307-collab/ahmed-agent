@@ -10,7 +10,13 @@ from uuid import uuid4
 from pydantic import Field
 from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelResponse,
+    NativeToolCallPart,
+    TextPart,
+)
 from pydantic_ai.models import Model
 
 from academic_search import academic_search as existing_academic_search
@@ -959,6 +965,53 @@ def parse_message_history(raw_history: object) -> Sequence[ModelMessage] | None:
     return history
 
 
+def _set_final_output(result: Any, final_output: str) -> None:
+    """Make the saved final response carry exactly the reply shown to the user.
+
+    The server returns ``result.output`` as the reply and saves
+    ``result.new_messages_json()`` as the history replayed on the next turn.
+    PydanticAI builds a text output by concatenating the final response's
+    TextParts after its last native tool call, so those parts are replaced as
+    a whole: the first keeps its metadata and the full text, the rest are
+    dropped. Parts that are not output text are never touched.
+    """
+
+    result.output = final_output
+    if not final_output:
+        # The server rejects an empty reply, so there is nothing to mirror.
+        return
+    response = next(
+        (
+            message
+            for message in reversed(result.new_messages())
+            if isinstance(message, ModelResponse)
+        ),
+        None,
+    )
+    if response is None:
+        return
+    first_output_index = 0
+    for index, part in enumerate(response.parts):
+        if isinstance(part, NativeToolCallPart):
+            first_output_index = index + 1
+    text_indexes = [
+        index
+        for index in range(first_output_index, len(response.parts))
+        if isinstance(response.parts[index], TextPart)
+    ]
+    saved_text = "".join(response.parts[index].content for index in text_indexes)
+    if saved_text == final_output:
+        return
+    if not text_indexes:
+        response.parts = [*response.parts, TextPart(content=final_output)]
+        return
+    response.parts[text_indexes[0]].content = final_output
+    dropped = set(text_indexes[1:])
+    response.parts = [
+        part for index, part in enumerate(response.parts) if index not in dropped
+    ]
+
+
 async def run_ahmed(
     user_message: str,
     *,
@@ -1054,14 +1107,10 @@ async def run_ahmed(
                 ),
             )
             evidence_report = render_evidence_report(evidence_envelopes)
+            final_output = str(result.output).strip()
             if evidence_report:
-                original_output = remove_model_source_markers(str(result.output).strip())
-                final_output = original_output + evidence_report
-                result.output = final_output
-                for message in result.new_messages():
-                    for part in message.parts:
-                        if getattr(part, "content", None) == original_output:
-                            part.content = final_output
+                final_output = remove_model_source_markers(final_output) + evidence_report
+            _set_final_output(result, final_output)
             _mark_provider_ready(
                 active_candidate.name,  # type: ignore[arg-type]
                 int((time.perf_counter() - attempt_started) * 1000)
