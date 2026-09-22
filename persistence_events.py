@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from persistence_audit import _append_audit_event
 from persistence_core import PersistenceError, _get_pool

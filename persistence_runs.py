@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+from typing import Any
 
 from persistence_audit import _append_audit_event
 from persistence_core import (

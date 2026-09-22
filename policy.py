@@ -40,6 +40,22 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
         external_side_effect=False,
         data_scope="WEB",
     ),
+    "academic_search": ToolPolicy(
+        tool_name="academic_search",
+        risk_level=RiskLevel.READ_SAFE,
+        requires_approval=False,
+        reversible=True,
+        external_side_effect=False,
+        data_scope="ACADEMIC_EXTERNAL",
+    ),
+    "github_search": ToolPolicy(
+        tool_name="github_search",
+        risk_level=RiskLevel.READ_SAFE,
+        requires_approval=False,
+        reversible=True,
+        external_side_effect=False,
+        data_scope="GITHUB_PUBLIC_API",
+    ),
     "search_my_files": ToolPolicy(
         tool_name="search_my_files",
         risk_level=RiskLevel.READ_SAFE,

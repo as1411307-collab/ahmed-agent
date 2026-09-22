@@ -118,7 +118,7 @@ ARCHITECTURE_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
             "search_fabric.py",
             "academic_search.py",
             "github_search.py",
-            "model_providers.py",
+            "agent_providers.py",
         ),
         "implementation_patterns": (
             r"web_search|academic_search|github_search",
