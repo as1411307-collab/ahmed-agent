@@ -7,7 +7,6 @@ from pathlib import Path
 
 from evidence_core import (
     EvidenceCoreError,
-    EvidenceStatus,
     EvidenceTrust,
     ProjectEvidenceCore,
 )

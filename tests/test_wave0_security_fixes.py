@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import socket
 import unittest
 from types import SimpleNamespace
-from io import BytesIO
 from unittest.mock import AsyncMock, patch
-from urllib.error import HTTPError
-from urllib.request import Request as UrlRequest
 
 
 class SkillToolsSSRFTests(unittest.TestCase):

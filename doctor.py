@@ -139,6 +139,7 @@ async def _build_report(*, probe_search: bool) -> dict[str, Any]:
             "last_failure": provider.get("last_failure"),
             "latency_ms": provider.get("latency_ms"),
             "safe_error_code": storage_error,
+            **storage_details,
         },
         "models": {
             "status": provider_status,
